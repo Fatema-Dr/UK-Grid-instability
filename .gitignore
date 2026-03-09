@@ -6,3 +6,4 @@ Implementation/notebooks/*.keras
 Implementation/notebooks/evaluation_outputs/*.png
 Implementation/.cache/
 Implementation/.cache.sqlite
+Implementation/notebooks/.cache.sqlite
