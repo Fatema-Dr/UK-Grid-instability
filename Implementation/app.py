@@ -6,10 +6,39 @@ import plotly.graph_objects as go
 import numpy as np
 import os
 import shap
+import hashlib
+from pathlib import Path
 from src.config import TTA_SECONDS, LGBM_FEATURE_COLS, WEATHER_API_DEFAULT_START_DATE, WEATHER_API_DEFAULT_END_DATE
 from src.data_loader import fetch_frequency_data, fetch_inertia_data, fetch_weather_data
 from src.feature_engineering import create_features #
 from datetime import date # Import date for date_input widget
+
+# -----------------------------------------------------------------------------
+# 0. CACHE & HASHING HELPERS
+# -----------------------------------------------------------------------------
+CACHE_DIR = Path("data/processed_cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+def get_src_hash():
+    """Calculates a hash of all python files in the src directory to detect logic changes."""
+    hasher = hashlib.md5()
+    src_path = Path("src")
+    # Sort files to ensure consistent hashing
+    for file_path in sorted(src_path.glob("**/*.py")):
+        if "__pycache__" in str(file_path):
+            continue
+        with open(file_path, "rb") as f:
+            hasher.update(f.read())
+    return hasher.hexdigest()
+
+def clear_invalid_cache(current_hash: str):
+    """Deletes cache files that don't match the current source code hash."""
+    for cache_file in CACHE_DIR.glob("*.parquet"):
+        if current_hash not in cache_file.name:
+            try:
+                cache_file.unlink()
+            except Exception as e:
+                st.warning(f"Could not delete old cache file {cache_file}: {e}")
 
 # Helper function to safely get current row
 def get_current_row_safely(df_data_local, time_index_local):
@@ -20,7 +49,6 @@ def get_current_row_safely(df_data_local, time_index_local):
         st.error(f"🚨 Internal Error: time_index ({time_index_local}) is out of bounds for df_data (length {len(df_data_local)}). Please report this issue.")
         return None
     return df_data_local.iloc[time_index_local]
-
 
 # -----------------------------------------------------------------------------
 # 1. PAGE CONFIGURATION
@@ -48,6 +76,14 @@ st.markdown("""
 # The hash will change when dates change, triggering a re-run.
 @st.cache_data(show_spinner="Loading models and data for selected date range...")
 def load_resources_and_data(start_date_str: str, end_date_str: str):
+    # Calculate current source hash and clear stale cache
+    src_hash = get_src_hash()
+    clear_invalid_cache(src_hash)
+    
+    # Define cache file path for this specific date range and source version
+    cache_filename = f"processed_data_{start_date_str}_to_{end_date_str}_{src_hash}.parquet"
+    cache_path = CACHE_DIR / cache_filename
+    
     # Define paths
     lower_model_path = "notebooks/lgbm_quantile_lower.pkl"
     upper_model_path = "notebooks/lgbm_quantile_upper.pkl"
@@ -64,71 +100,74 @@ def load_resources_and_data(start_date_str: str, end_date_str: str):
     lower_model = joblib.load(lower_model_path)
     upper_model = joblib.load(upper_model_path)
     
-    # --- Data Ingestion via API ---
-    # Fetch frequency data
-    df_freq = fetch_frequency_data(
-        start_date=start_date_str,
-        end_date=end_date_str
-    )
-    if df_freq.is_empty():
-        st.error("🚨 Failed to load frequency data from API. Please check your date range or API connection.")
-        st.stop()
+    # --- Check Cache Hit ---
+    if cache_path.exists():
+        st.sidebar.success(f"⚡ Loaded from cache for {start_date_str}")
+        df_data = pd.read_parquet(cache_path)
+    else:
+        st.sidebar.info(f"🔄 Processing data for {start_date_str}...")
+        # --- Data Ingestion via API ---
+        # Fetch frequency data
+        df_freq = fetch_frequency_data(
+            start_date=start_date_str,
+            end_date=end_date_str
+        )
+        if df_freq.is_empty():
+            st.error("🚨 Failed to load frequency data from API. Please check your date range or API connection.")
+            st.stop()
 
-    # Fetch weather data
-    df_weather = fetch_weather_data(
-        start_date=start_date_str,
-        end_date=end_date_str
-    )
-    if df_weather.is_empty():
-        st.error("🚨 Failed to load weather data from API. Please check your date range or API connection.")
-        st.stop()
+        # Fetch weather data
+        df_weather = fetch_weather_data(
+            start_date=start_date_str,
+            end_date=end_date_str
+        )
+        if df_weather.is_empty():
+            st.error("🚨 Failed to load weather data from API. Please check your date range or API connection.")
+            st.stop()
 
-    # Fetch inertia data
-    df_inertia = fetch_inertia_data(
-        start_date=start_date_str,
-        end_date=end_date_str
-    )
-    if df_inertia.is_empty():
-        st.error("🚨 Failed to load inertia data from API. Please check your date range or API connection.")
-        st.stop()
+        # Fetch inertia data
+        df_inertia = fetch_inertia_data(
+            start_date=start_date_str,
+            end_date=end_date_str
+        )
+        if df_inertia.is_empty():
+            st.error("🚨 Failed to load inertia data from API. Please check your date range or API connection.")
+            st.stop()
 
-    # --- Merge Datasets ---
-    df_freq = df_freq.sort("timestamp")
-    df_weather = df_weather.sort("timestamp")
-    df_inertia = df_inertia.sort("timestamp_date")
+        # --- Merge Datasets ---
+        df_freq = df_freq.sort("timestamp")
+        df_weather = df_weather.sort("timestamp")
+        df_inertia = df_inertia.sort("timestamp_date")
 
-    df_merged = df_freq.join_asof(
-        df_weather,
-        on="timestamp",
-        strategy="backward"
-    )
-    df_inertia = df_inertia.with_columns(
-        pl.col("timestamp_date").cast(pl.Datetime(time_unit="us", time_zone="UTC")).alias("timestamp")
-    )
-    #st.write(f"DEBUG: df_merged shape after joining with df_weather: {df_merged.shape}")
-    #st.write(f"DEBUG: df_merged null count before joining with df_inertia: {df_merged.null_count()}")
+        df_merged = df_freq.join_asof(
+            df_weather,
+            on="timestamp",
+            strategy="backward"
+        )
+        df_inertia = df_inertia.with_columns(
+            pl.col("timestamp_date").cast(pl.Datetime(time_unit="us", time_zone="UTC")).alias("timestamp")
+        )
 
-    df_merged = df_merged.join_asof(
-        df_inertia.select(["timestamp", "inertia_cost"]),
-        on="timestamp",
-        strategy="backward"
-    )
-    #st.write(f"DEBUG: df_merged shape after joining with df_inertia: {df_merged.shape}")
-    #st.write(f"DEBUG: df_merged null count before drop_nulls(): {df_merged.null_count()}")
-    
-    df_merged = df_merged.drop_nulls().to_pandas() # Convert to Pandas DataFrame for SHAP and joblib models
-    #st.write(f"DEBUG: df_merged Pandas shape after drop_nulls() and to_pandas(): {df_merged.shape}")
-    
-    # --- Feature Engineering ---
-    df_data = create_features(df_merged)
+        df_merged = df_merged.join_asof(
+            df_inertia.select(["timestamp", "inertia_cost"]),
+            on="timestamp",
+            strategy="backward"
+        )
+        
+        df_merged = df_merged.drop_nulls().to_pandas() # Convert to Pandas DataFrame for SHAP and joblib models
+        
+        # --- Feature Engineering ---
+        df_data = create_features(df_merged)
 
-    if df_data.empty:
-        st.error("🚨 After merging and feature engineering, no data remains. Please adjust your date range or data sources.")
-        st.stop()
-    #st.write(f"DEBUG: df_data shape after create_features: {df_data.shape}")
+        if df_data.empty:
+            st.error("🚨 After merging and feature engineering, no data remains. Please adjust your date range or data sources.")
+            st.stop()
 
-    # Convert timestamp to datetime if not already (after feature engineering)
-    df_data['timestamp'] = pd.to_datetime(df_data['timestamp'])
+        # Convert timestamp to datetime if not already (after feature engineering)
+        df_data['timestamp'] = pd.to_datetime(df_data['timestamp'])
+        
+        # Save to cache for next time
+        df_data.to_parquet(cache_path)
     
     # Create explainer for the lower bound model
     explainer = shap.TreeExplainer(lower_model)
@@ -164,62 +203,90 @@ if df_data.empty:
     st.error("🚨 No data available for the selected date range after loading and processing. Please select a different range.")
 else: # Only proceed if df_data is not empty
     st.sidebar.markdown("---")
-    st.sidebar.subheader("Simulation Settings")
+    st.sidebar.subheader("⏱ Time Navigation")
 
-    # Allow user to "scrub" through time to find the blackout
-    # Default value for slider will be roughly the middle of the loaded data
-    default_slider_value = int(len(df_data) * 0.5)
-    slider_max_value = max(0, len(df_data) - 1) # Ensure max value is at least 0
-
-    slider_value = st.sidebar.slider(
-        "Simulation Time (relative index)", 0, slider_max_value, default_slider_value, 1
+    # 1. Date picker for day selection
+    available_dates = df_data['timestamp'].dt.date.unique().tolist()
+    available_dates.sort()
+    
+    if "nav_date" not in st.session_state or st.session_state.nav_date not in available_dates:
+        st.session_state.nav_date = available_dates[len(available_dates) // 2]
+    
+    selected_nav_date = st.sidebar.date_input(
+        "📅 Jump to Date",
+        value=st.session_state.nav_date,
+        min_value=available_dates[0],
+        max_value=available_dates[-1],
     )
+    
+    # Reset time slider if date changed
+    if selected_nav_date != st.session_state.nav_date:
+        st.session_state.nav_date = selected_nav_date
+        if "time_nav_index" in st.session_state:
+            del st.session_state["time_nav_index"]
 
-    # Add a text input for precise time navigation
-    time_input = st.sidebar.text_input("Go to time (HH:MM:SS UTC)", value="")
+    # 2. Filter data to selected date
+    day_mask = df_data['timestamp'].dt.date == selected_nav_date
+    global_indices_for_day = np.where(day_mask)[0].tolist()
+    day_timestamps = df_data['timestamp'].iloc[global_indices_for_day].tolist()
+    
+    if not global_indices_for_day:
+        st.sidebar.warning(f"No data for {selected_nav_date}")
+        st.stop()
 
-    # Add a slider for TTA_SECONDS
-    tta_seconds_user = st.sidebar.slider(
-        "Time to Alert (seconds ahead)", 5, 60, TTA_SECONDS, 5
+    default_day_idx = len(global_indices_for_day) // 2
+    if "time_nav_index" not in st.session_state:
+        st.session_state.time_nav_index = default_day_idx
+        
+    # Ensure index is within bounds of current day
+    st.session_state.time_nav_index = min(max(0, st.session_state.time_nav_index), len(global_indices_for_day) - 1)
+
+    # 3. Step buttons
+    btn_col1, btn_col2 = st.sidebar.columns(2)
+    with btn_col1:
+        if st.button("◀ −1 s", use_container_width=True):
+            st.session_state.time_nav_index = max(0, st.session_state.time_nav_index - 1)
+    with btn_col2:
+        if st.button("▶ +1 s", use_container_width=True):
+            st.session_state.time_nav_index = min(len(global_indices_for_day) - 1, st.session_state.time_nav_index + 1)
+
+    # 4. Datetime slider for selected day
+    ts_options = list(range(len(day_timestamps)))
+
+    def _fmt_ts(idx):
+        return day_timestamps[idx].strftime("%H:%M:%S")
+
+    selected_idx = st.sidebar.select_slider(
+        "Select Time",
+        options=ts_options,
+        value=st.session_state.time_nav_index,
+        format_func=_fmt_ts,
     )
-    # Override TTA_SECONDS with user's selection
-    TTA_SECONDS = tta_seconds_user
+    st.session_state.time_nav_index = selected_idx
+    
+    # Map back to global index for the rest of the app
+    time_index = global_indices_for_day[selected_idx]
 
-    # Determine the final time_index based on text input or slider
-    time_index = slider_value
-    if time_input:
-        try:
-            # Assuming the time input is for the first day of the selected range, for simplicity
-            # This part might need more robust handling if multi-day selection is fully supported
-            target_time_str = f"{selected_start_date.strftime('%Y-%m-%d')} {time_input}"
-            target_datetime = pd.to_datetime(target_time_str).tz_localize('UTC')
-            
-            # Find the closest index
-            # Check if df_data['timestamp'] is empty before calling argmin
-            if not df_data['timestamp'].empty:
-                closest_idx = (df_data['timestamp'] - target_datetime).abs().argmin()
-                # Ensure closest_idx is within bounds
-                if 0 <= closest_idx < len(df_data):
-                    time_index = closest_idx
-                else:
-                    st.sidebar.warning("Calculated time index out of bounds, using slider value.")
-            else:
-                st.sidebar.warning("Cannot search for time input as timestamp data is empty.")
-            
-            # Update slider value for consistency, but this might be an issue with Streamlit's state management
-            # For now, let's just use time_index from text input if valid
-        except Exception as e:
-            st.sidebar.error(f"Invalid time format: {e}. Please use HH:MM:SS.")
+    # Caption showing the full selected timestamp
+    sel_ts = day_timestamps[selected_idx]
+    st.sidebar.caption(f"📍 **{sel_ts.strftime('%Y-%m-%d  %H:%M:%S')} UTC**")
 
     current_row = get_current_row_safely(df_data, time_index)
 
     if current_row is None:
-        st.stop() # Stop further execution if current_row could not be retrieved safely
+        st.stop()  # Stop further execution if current_row could not be retrieved safely
 
     current_time = current_row['timestamp']
 
+    # --- Alert Configuration (TTA + Threshold grouped) ---
     st.sidebar.markdown("---")
-    st.sidebar.subheader("Alerting Threshold")
+    st.sidebar.subheader("⚙️ Alert Configuration")
+
+    tta_seconds_user = st.sidebar.slider(
+        "Time to Alert (seconds ahead)", 5, 60, TTA_SECONDS, 5
+    )
+    TTA_SECONDS = tta_seconds_user
+
     alert_threshold_hz = st.sidebar.slider("Instability Threshold (Hz)", 49.5, 49.9, 49.8, 0.05)
 
 

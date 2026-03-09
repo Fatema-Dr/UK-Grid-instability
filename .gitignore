@@ -1,1 +1,8 @@
 __pycache__
+.venv
+Implementation/data/processed_cache/
+Implementation/notebooks/*.pkl
+Implementation/notebooks/*.keras
+Implementation/notebooks/evaluation_outputs/*.png
+Implementation/.cache/
+Implementation/.cache.sqlite
