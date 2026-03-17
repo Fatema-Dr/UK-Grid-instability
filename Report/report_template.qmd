@@ -1,0 +1,121 @@
+---
+title: "Project Title"
+author: "Student First and Last Name"
+date: "11 September 2021"
+format: pdf
+toc: true
+toc-depth: 3
+number-sections: true
+---
+
+# SCHOOL OF ARCHITECTURE, COMPUTING AND ENGINEERING
+
+**Department of Engineering and Computing**
+
+## Project Title
+
+**Student Name:** Student First and Last Name  
+**Student Number:** XXXXXXX  
+
+A report submitted in partial fulfilment of the degree of  
+
+**BSc (Hons) in Your Programme**
+
+Supervisor: Supervisor Name  
+Module: CN6000  
+
+---
+
+# Abstract
+
+Write your abstract here.
+
+Remember:
+- Maximum **500 words**
+- Include:
+  - Purpose of the project
+  - How the project was carried out
+  - Outcome/results
+- **Do not cite sources in the abstract.**
+
+---
+
+# Acknowledgments
+
+Here you can thank the people, including your supervisor, who helped you with your project.
+
+---
+
+# Chapter 1: Introduction
+
+Write your introduction here.
+
+## 1.1 Sub-heading
+
+Typical sections may include:
+
+- Introduction
+- Purpose of the project
+- Problem Statement
+- Aim of the project
+- Objectives of the project
+- Structure of the report
+
+---
+
+# Chapter 2: Literature Review
+
+Write your literature review here.
+
+Every paragraph based on research **must include citation and referencing using the Harvard approach**.
+
+Students who do not use Harvard referencing risk failing the project.
+
+## 2.1 Second Level Headings
+
+### 2.1.1 Third Level Headings
+
+Be critical of the literature you read.
+
+Consider adding a section called **“Gaps in the Literature”** where you explain what is missing or poorly explained in existing research.
+
+---
+
+# Chapter 3: Project Methodology
+
+Explain the process you used to complete the project.
+
+Include sections discussing:
+
+- Research Method
+- System Design / Approach
+- Tools and Technologies
+- Legal Considerations
+- Ethical Considerations
+- Environmental Considerations
+
+---
+
+# Chapter 4: Results / Findings / Outcomes
+
+Report the **objective results** of your project.
+
+Avoid interpreting the results here. Interpretation happens in the **evaluation chapter**.
+
+## 4.1 Source Code
+
+Use code blocks to present snippets of important code.
+
+```java
+static public void main(String[] args) {
+
+  try  {
+    UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+  }
+  catch(Exception e) {
+    e.printStackTrace();
+  }
+
+  new WelcomeApp();
+
+}

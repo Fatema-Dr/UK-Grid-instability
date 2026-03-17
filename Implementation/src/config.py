@@ -44,7 +44,7 @@ LGBM_FEATURE_COLS = [
     "wind_ramp_rate",
     "solar_radiation", 
     "hour",
-    "inertia_cost"
+    "renewable_penetration_ratio"
 ] + [f"lag_{lag}s" for lag in LAG_INTERVALS_SECONDS]
 
 # List of features for the LSTM model
@@ -54,7 +54,7 @@ LSTM_FEATURE_COLS = [
     "volatility_10s", 
     "wind_speed",
     "wind_ramp_rate",
-    "inertia_cost"
+    "renewable_penetration_ratio"
 ] + [f"lag_{lag}s" for lag in LAG_INTERVALS_SECONDS]
 
 # Target column for classification

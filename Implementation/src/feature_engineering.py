@@ -45,7 +45,7 @@ def calculate_wind_ramp_rate(df):
     """
     print("Calculating wind ramp rate...")
     # Timestamps need to be converted to Unix time (seconds) for slope calculation
-    weather_data = df[["timestamp", "wind_speed"]].drop_duplicates(subset=["timestamp"])
+    weather_data = df[["timestamp", "wind_speed"]].drop_duplicates(subset=["timestamp"]).copy()
     weather_data['unix_ts'] = weather_data['timestamp'].astype(np.int64) // 1_000_000_000
     
     # Apply the local Swinging Door algorithm implementation
@@ -89,7 +89,14 @@ def create_features(df):
     # Initialize df_features with the current df
     df_features = df.copy()
 
-    df_features["rocof"] = df_features["grid_frequency"].diff().fillna(0)
+    # Smooth the RoCoF with a 5-second rolling average
+    df_features["rocof"] = df_features["grid_frequency"].diff().rolling(window=5, min_periods=1).mean().fillna(0)
+    
+    # Calculate synthetic Renewable Penetration Ratio as a proxy for physical grid inertia
+    # Assuming average daily demand of 35000 MW, and scaling wind_speed by a hypothetical capacity
+    # e.g., renewable_penetration_ratio = (wind_speed * 3000 MW wind capacity) / 35000 MW demand
+    df_features["renewable_penetration_ratio"] = (df_features["wind_speed"] * 3000) / 35000
+
     df_features["volatility_10s"] = df_features["grid_frequency"].rolling(window=10).std().fillna(0)
     df_features["hour"] = df_features["timestamp"].dt.hour
     df_features["minute"] = df_features["timestamp"].dt.minute

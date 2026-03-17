@@ -115,7 +115,10 @@ def fetch_frequency_data(start_date: str, end_date: str) -> pl.DataFrame:
     df = df.rename({"dtm": "timestamp", "f": "grid_frequency"}) # API uses 'f', internal code uses 'grid_frequency'
 
     df = df.with_columns(
-        pl.col("timestamp").str.strptime(pl.Datetime, format="%Y-%m-%d %H:%M:%S %z").alias("timestamp")
+        pl.col("timestamp")
+        .str.strptime(pl.Datetime, format="%Y-%m-%d %H:%M:%S %z")
+        .dt.convert_time_zone("UTC")
+        .alias("timestamp")
     ).sort("timestamp")
     
     logging.info(f"Loaded {df.height} rows of frequency data from API.")
@@ -134,7 +137,8 @@ def fetch_frequency_data(start_date: str, end_date: str) -> pl.DataFrame:
 
 def fetch_weather_data(start_date, end_date):
     """
-    Fetches hourly historical weather data for the UK using parameters from config and performs basic validation.
+    Fetches hourly historical weather data for the UK using parameters from config,
+    upsamples it to 1-second resolution with linear interpolation, and performs basic validation.
     """
     logging.info("Fetching weather data...")
     cache_session = requests_cache.CachedSession('.cache', expire_after=3600)
@@ -158,6 +162,7 @@ def fetch_weather_data(start_date, end_date):
         return pl.DataFrame() # Return empty DataFrame on API error
 
     hourly = response.Hourly()
+    # Read the hourly data
     hourly_data = {"timestamp": pd.date_range(
         start=pd.to_datetime(hourly.Time(), unit="s"),
         end=pd.to_datetime(hourly.TimeEnd(), unit="s"),
@@ -173,13 +178,21 @@ def fetch_weather_data(start_date, end_date):
     hourly_data["wind_gusts"] = hourly.Variables(5).ValuesAsNumpy()
     hourly_data["solar_radiation"] = hourly.Variables(6).ValuesAsNumpy()
 
-    df_weather = pl.from_pandas(pd.DataFrame(data=hourly_data))
+    df_weather_pd = pd.DataFrame(data=hourly_data)
+    
+    # Upsample to 1-second resolution and interpolate
+    logging.info("Interpolating weather data to 1-second resolution...")
+    df_weather_pd.set_index('timestamp', inplace=True)
+    df_weather_pd = df_weather_pd.resample('1s').interpolate(method='time')
+    df_weather_pd.reset_index(inplace=True)
+
+    df_weather = pl.from_pandas(df_weather_pd)
     df_weather = df_weather.with_columns(
         pl.col("timestamp")
         .dt.convert_time_zone("UTC")
         .cast(pl.Datetime("us", time_zone="UTC"))
     )
-    logging.info(f"Loaded {df_weather.height} rows of weather data.")
+    logging.info(f"Loaded and interpolated {df_weather.height} rows of weather data.")
 
     # Validation
     expected_cols = {
