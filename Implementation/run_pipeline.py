@@ -25,11 +25,15 @@ def main():
     from src.config import (
         LGBM_MODEL_PATH, LSTM_MODEL_PATH, SCALER_PATH, DEMO_DATA_PATH,
         LGBM_QUANTILE_LOWER_PATH, LGBM_QUANTILE_UPPER_PATH, QUANTILE_ALPHAS,
-        WEATHER_API_DEFAULT_START_DATE, WEATHER_API_DEFAULT_END_DATE
+        WEATHER_API_DEFAULT_START_DATE, WEATHER_API_DEFAULT_END_DATE,
+        LGBM_FEATURE_COLS, TARGET_FREQ_NEXT,
+        CALIBRATION_START_DATE, CALIBRATION_END_DATE,
+        LOWER_CALIBRATOR_PATH, UPPER_CALIBRATOR_PATH
     )
     from src.data_loader import fetch_frequency_data, fetch_weather_data, fetch_inertia_data
     from src.feature_engineering import merge_datasets, create_features
     from src.model_trainer import train_and_evaluate_lgbm_classifier, train_quantile_model, train_lstm_model
+    from src.calibration import fit_calibrator, save_calibrator
     import joblib
     import os
     import polars as pl
@@ -62,6 +66,24 @@ def main():
     print("\n--- Starting LSTM Training ---")
     lstm_model, scaler = train_lstm_model(df_processed_pl)
 
+    # 5b. Post-Hoc Quantile Recalibration
+    print("\n--- Fitting Quantile Calibrators (Isotonic Regression) ---")
+    cal_start = datetime.strptime(CALIBRATION_START_DATE, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    cal_end = datetime.strptime(CALIBRATION_END_DATE, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    cal_data = df_processed_pl.filter(
+        (pl.col("timestamp") >= pl.lit(cal_start)) &
+        (pl.col("timestamp") < pl.lit(cal_end))
+    ).to_pandas().dropna(subset=[TARGET_FREQ_NEXT])
+    
+    X_cal = cal_data[LGBM_FEATURE_COLS]
+    y_cal = cal_data[TARGET_FREQ_NEXT].values
+    
+    lower_cal_preds = lower_model.predict(X_cal)
+    upper_cal_preds = upper_model.predict(X_cal)
+    
+    lower_calibrator = fit_calibrator(y_cal, lower_cal_preds, alpha=QUANTILE_ALPHAS[0])
+    upper_calibrator = fit_calibrator(y_cal, upper_cal_preds, alpha=QUANTILE_ALPHAS[1])
+
     # 6. Save Demo Data
     print("\n--- Saving Demo Data for Dashboard ---")
     start_date = datetime(2019, 8, 9).replace(tzinfo=timezone.utc)
@@ -80,7 +102,9 @@ def main():
     joblib.dump(upper_model, LGBM_QUANTILE_UPPER_PATH)
     lstm_model.save(LSTM_MODEL_PATH)
     joblib.dump(scaler, SCALER_PATH)
-    print("All models saved.")
+    save_calibrator(lower_calibrator, LOWER_CALIBRATOR_PATH)
+    save_calibrator(upper_calibrator, UPPER_CALIBRATOR_PATH)
+    print("All models and calibrators saved.")
 
     print("\nPipeline finished successfully!")
 

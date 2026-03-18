@@ -96,16 +96,56 @@ def _validate_dataframe(df: pl.DataFrame, name: str, expected_cols: dict, value_
     return df
 
 
+def _get_frequency_resource_ids(start_date: str, end_date: str) -> list:
+    """
+    Returns the list of NESO resource IDs needed to cover the date range.
+    The frequency data is split by month, so a multi-month range needs
+    multiple resource IDs.
+    """
+    from datetime import datetime
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+    resource_ids = []
+    current = start
+    while current <= end:
+        key = current.strftime("%Y-%m")
+        if key in config.NESO_FREQUENCY_RESOURCE_MAP:
+            resource_ids.append((key, config.NESO_FREQUENCY_RESOURCE_MAP[key]))
+        else:
+            logging.warning(f"No frequency resource ID configured for {key}")
+        # Move to the first day of the next month
+        if current.month == 12:
+            current = current.replace(year=current.year + 1, month=1, day=1)
+        else:
+            current = current.replace(month=current.month + 1, day=1)
+    return resource_ids
+
+
 def fetch_frequency_data(start_date: str, end_date: str) -> pl.DataFrame:
     """
     Fetches NESO 1-second frequency data from the CKAN API and performs basic validation.
+    Automatically selects the correct monthly resource IDs for the date range.
     """
     logging.info(f"Fetching grid frequency data from API for {start_date} to {end_date}...")
     
-    # Using the example resource ID from config. This should be updated dynamically in a real system.
-    resource_id = config.NESO_FREQUENCY_RESOURCE_ID_2019_08 
+    resource_entries = _get_frequency_resource_ids(start_date, end_date)
+    if not resource_entries:
+        logging.error(f"No frequency resource IDs found for {start_date} to {end_date}")
+        return pl.DataFrame()
     
-    df = _fetch_ckan_data(resource_id, "dtm", start_date, end_date)
+    # Fetch and concatenate data from all required monthly resources
+    frames = []
+    for month_key, resource_id in resource_entries:
+        logging.info(f"Fetching frequency data for {month_key} (resource: {resource_id})...")
+        df_part = _fetch_ckan_data(resource_id, "dtm", start_date, end_date)
+        if not df_part.is_empty():
+            frames.append(df_part)
+    
+    if not frames:
+        logging.error("No frequency data returned from any resource.")
+        return pl.DataFrame()
+    
+    df = pl.concat(frames)
 
     if df.is_empty():
         return df
@@ -244,3 +284,85 @@ def fetch_inertia_data(start_date: str, end_date: str) -> pl.DataFrame:
     }
     df = _validate_dataframe(df, "Inertia Data (API)", expected_cols, value_checks)
     return df
+
+
+def fetch_inertia_data_halfhourly(start_date: str, end_date: str) -> pl.DataFrame:
+    """
+    Fetches half-hourly system inertia data from the NESO CKAN API, interpolates
+    to 1-second resolution, and performs basic validation.
+    """
+    logging.info(f"Fetching half-hourly system inertia data for {start_date} to {end_date}...")
+    
+    resource_id = config.NESO_INERTIA_HALFHOURLY_RESOURCE_ID
+    df = _fetch_ckan_data(resource_id, "Settlement Date", start_date, end_date)
+    
+    if df.is_empty():
+        logging.warning("Half-hourly inertia data is empty. Falling back to daily.")
+        return pl.DataFrame()
+    
+    # Identify the actual column names from the API response
+    logging.info(f"Half-hourly inertia columns: {df.columns}")
+    
+    # Rename to standard names — adjust based on actual API schema
+    rename_map = {}
+    for col in df.columns:
+        col_lower = col.lower()
+        if 'date' in col_lower and 'settlement' in col_lower:
+            rename_map[col] = 'timestamp_date'
+        elif 'period' in col_lower and 'settlement' in col_lower:
+            rename_map[col] = 'settlement_period'
+        elif 'inertia' in col_lower and 'mw' in col_lower:
+            rename_map[col] = 'system_inertia_mws'
+        elif 'inertia' in col_lower:
+            rename_map[col] = 'system_inertia_mws'
+    
+    if rename_map:
+        df = df.rename(rename_map)
+    
+    if 'system_inertia_mws' not in df.columns:
+        logging.error(f"Could not find inertia column in half-hourly data. Columns: {df.columns}")
+        return pl.DataFrame()
+    
+    # Build a proper timestamp from Settlement Date + Settlement Period
+    # Each settlement period is 30 minutes: period 1 = 00:00, period 2 = 00:30, etc.
+    if 'settlement_period' in df.columns and 'timestamp_date' in df.columns:
+        df = df.with_columns(
+            pl.col('timestamp_date').str.strptime(pl.Date, format="%Y-%m-%dT%H:%M:%S")
+        )
+        df = df.with_columns(
+            (pl.col('timestamp_date').cast(pl.Datetime).dt.replace_time_zone("UTC") +
+             (pl.col('settlement_period').cast(pl.Int64) - 1) * pl.duration(minutes=30)
+            ).alias('timestamp')
+        )
+    else:
+        # Fallback: try to parse timestamp_date directly
+        df = df.with_columns(
+            pl.col('timestamp_date').str.strptime(pl.Datetime, format="%Y-%m-%dT%H:%M:%S")
+            .dt.replace_time_zone("UTC").alias('timestamp')
+        )
+    
+    df = df.select(['timestamp', 'system_inertia_mws']).sort('timestamp')
+    
+    # Cast inertia to float
+    df = df.with_columns(pl.col('system_inertia_mws').cast(pl.Float64))
+    
+    # Interpolate to 1-second resolution
+    logging.info(f"Interpolating {df.height} half-hourly inertia records to 1-second resolution...")
+    df_pd = df.to_pandas()
+    df_pd.set_index('timestamp', inplace=True)
+    df_pd = df_pd.resample('1s').interpolate(method='time')
+    df_pd.reset_index(inplace=True)
+    
+    df_result = pl.from_pandas(df_pd)
+    df_result = df_result.with_columns(
+        pl.col('timestamp').dt.convert_time_zone('UTC').cast(pl.Datetime('us', time_zone='UTC'))
+    )
+    
+    logging.info(f"Half-hourly inertia data interpolated to {df_result.height} rows.")
+    
+    expected_cols = {"timestamp": pl.Datetime, "system_inertia_mws": pl.Float64}
+    value_checks = {
+        "system_inertia_mws": lambda s: s.min() >= 0
+    }
+    df_result = _validate_dataframe(df_result, "Half-hourly Inertia", expected_cols, value_checks)
+    return df_result

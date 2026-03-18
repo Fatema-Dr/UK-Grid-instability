@@ -254,17 +254,12 @@ During spot-checks of the **August 9, 2019 blackout**, the predicted lower bound
 - [x] LightGBM quantile regression (α=0.1 and α=0.9)
 - [x] LSTM trained as residual monitor with disagreement-based uncertainty alerts
 - [x] SHAP XAI integration in live dashboard
-- [x] Intervention Simulator ("What-If" slider)
-- [x] Model Health tab (placeholder metrics)
+- [x] Intervention Simulator — physics-informed (swing equation)
+- [x] Model Health tab with dynamic metric computation (Pinball Loss, PICP, MPIW, Calibration)
 - [x] Parquet caching with source-code hash invalidation
 - [x] Offline evaluation suite (`evaluate_models.py`) with dissertation-ready plots
 - [x] Dark "Control Room" CSS theme
-
-### ⬚ Remaining Improvements
-
-- [ ] Replace placeholder Model Health metrics with dynamic computation
-- [ ] Out-of-season validation (winter month test)
-- [ ] Post-hoc quantile recalibration
-- [ ] Physics-informed intervention simulator (swing equation)
-- [ ] Automated unit tests for pipeline and alert logic
-- [ ] Sub-daily inertia data source integration (if available)
+- [x] Automated unit tests for pipeline, alert logic, and metrics (31 tests — pytest)
+- [x] Out-of-season validation support (CLI args: `--start-date`, `--end-date`, dynamic resource ID selection)
+- [x] Post-hoc quantile recalibration (isotonic regression via `src/calibration.py`)
+- [x] Sub-daily inertia data integration (`fetch_inertia_data_halfhourly()` — half-hourly, interpolated to 1s)

@@ -9,7 +9,7 @@ import shap
 import hashlib
 from pathlib import Path
 import tensorflow as tf
-from src.config import TTA_SECONDS, LGBM_FEATURE_COLS, LSTM_FEATURE_COLS, LSTM_TIME_STEPS, WEATHER_API_DEFAULT_START_DATE, WEATHER_API_DEFAULT_END_DATE
+from src.config import TTA_SECONDS, LGBM_FEATURE_COLS, LSTM_FEATURE_COLS, LSTM_TIME_STEPS, WEATHER_API_DEFAULT_START_DATE, WEATHER_API_DEFAULT_END_DATE, TARGET_FREQ_NEXT, QUANTILE_ALPHAS, LOWER_CALIBRATOR_PATH, UPPER_CALIBRATOR_PATH
 from src.data_loader import fetch_frequency_data, fetch_inertia_data, fetch_weather_data
 from src.feature_engineering import create_features
 from datetime import date
@@ -178,7 +178,14 @@ def load_resources_and_data(start_date_str: str, end_date_str: str):
     # (Optional) we could pre-calculate SHAP values for the whole day here to save time
     explainer = shap.TreeExplainer(lower_model)
     
-    return lower_model, upper_model, lstm_model, scaler, df_data, explainer
+    # Load calibrators if available (optional — improves quantile calibration)
+    lower_calibrator, upper_calibrator = None, None
+    if os.path.exists(LOWER_CALIBRATOR_PATH) and os.path.exists(UPPER_CALIBRATOR_PATH):
+        lower_calibrator = joblib.load(LOWER_CALIBRATOR_PATH)
+        upper_calibrator = joblib.load(UPPER_CALIBRATOR_PATH)
+        st.sidebar.success("✅ Quantile calibrators loaded")
+    
+    return lower_model, upper_model, lstm_model, scaler, df_data, explainer, lower_calibrator, upper_calibrator
 
 
 # -----------------------------------------------------------------------------
@@ -199,7 +206,7 @@ with col_date2:
     selected_end_date = st.date_input("End Date", value=default_end_date)
 
 # Load resources based on selected dates
-lower_model, upper_model, lstm_model, scaler, df_data, explainer = load_resources_and_data(
+lower_model, upper_model, lstm_model, scaler, df_data, explainer, lower_calibrator, upper_calibrator = load_resources_and_data(
     selected_start_date.strftime("%Y-%m-%d"),
     selected_end_date.strftime("%Y-%m-%d")
 )
@@ -319,21 +326,40 @@ else: # Only proceed if df_data is not empty
         help="Simulate adding battery or demand response to improve grid stability."
     )
 
+    # Swing-equation constants for physics-informed intervention
+    SYSTEM_INERTIA_H = 4.0    # Typical UK grid inertia constant (seconds)
+    NOMINAL_FREQ = 50.0       # Nominal grid frequency (Hz)
+    TOTAL_SYSTEM_CAPACITY = 35000  # Approximate UK system capacity (MW)
+
 
     # -----------------------------------------------------------------------------
     # 4. PREDICTION LOGIC
     # -----------------------------------------------------------------------------
     input_lgbm = pd.DataFrame([current_row[LGBM_FEATURE_COLS].values], columns=LGBM_FEATURE_COLS)
 
-    # Apply Intervention Simulator logic:
+    # Apply Intervention Simulator logic using the Swing Equation:
+    # Δf = (ΔP × f₀) / (2 × H × S_base)
+    swing_delta_f = 0.0
     if synthetic_inertia_mw > 0:
-        # Our proxy for inertia is renewable_penetration_ratio. Adding synthetic inertia decreases the physical risk proxy.
-        # Let's say every 1000MW injected decreases the ratio by 0.05.
-        intervention_effect = (synthetic_inertia_mw / 1000) * 0.05
+        # 1. Physics-based frequency uplift from the swing equation
+        swing_delta_f = (synthetic_inertia_mw * NOMINAL_FREQ) / (2 * SYSTEM_INERTIA_H * TOTAL_SYSTEM_CAPACITY)
+        # 2. Adjust the renewable penetration proxy — injected inertia reduces the
+        #    effective non-synchronous generation fraction
+        intervention_effect = (synthetic_inertia_mw / TOTAL_SYSTEM_CAPACITY)
         input_lgbm['renewable_penetration_ratio'] = np.maximum(0, input_lgbm['renewable_penetration_ratio'] - intervention_effect)
+        st.sidebar.caption(f"⚡ Swing Eq: Δf = ({synthetic_inertia_mw} × {NOMINAL_FREQ}) / (2 × {SYSTEM_INERTIA_H} × {TOTAL_SYSTEM_CAPACITY}) = **+{swing_delta_f:.4f} Hz**")
 
-    lower_bound_pred = lower_model.predict(input_lgbm)[0]
-    upper_bound_pred = upper_model.predict(input_lgbm)[0]
+    lower_bound_raw = lower_model.predict(input_lgbm)[0]
+    upper_bound_raw = upper_model.predict(input_lgbm)[0]
+    
+    # Apply calibration if calibrators are available
+    if lower_calibrator is not None and upper_calibrator is not None:
+        from src.calibration import calibrate_predictions
+        lower_bound_raw = calibrate_predictions(lower_calibrator, np.array([lower_bound_raw]))[0]
+        upper_bound_raw = calibrate_predictions(upper_calibrator, np.array([upper_bound_raw]))[0]
+    
+    lower_bound_pred = lower_bound_raw + swing_delta_f
+    upper_bound_pred = upper_bound_raw + swing_delta_f
 
     is_alert = lower_bound_pred < alert_threshold_hz
 
@@ -457,16 +483,56 @@ else: # Only proceed if df_data is not empty
     with tab_health:
         st.subheader("Model Reliability & Calibration")
         st.write("This tab shows how well calibrated the uncertainty bands are for the selected day.")
-        
-        # We need to evaluate over the day to get pinball loss
-        # Here we just show a placeholder, or we can compute on the fly!
-        with st.spinner("Calculating daylight metrics..."):
-            # A full day pinball computation could go here
-            st.info("The model is calibrated at the targeted quantiles (0.1 and 0.9).")
-            # For brevity, let's just make it a placeholder if calculation is heavy
-            st.metric("Pinball Loss (Lower Bound 10%)", "0.0142")
-            st.metric("Pinball Loss (Upper Bound 90%)", "0.0168")
-            st.metric("Prediction Interval Coverage (PICP)", "81.5%")
+
+        # --- Dynamic metric computation for the selected day ---
+        day_data = df_data[df_data['timestamp'].dt.date == selected_nav_date].copy()
+        day_eval = day_data.dropna(subset=[TARGET_FREQ_NEXT])
+
+        if day_eval.empty or len(day_eval) < 10:
+            st.warning("Not enough data on this day to compute calibration metrics.")
+        else:
+            with st.spinner("Computing calibration metrics for this day..."):
+                y_true_day = day_eval[TARGET_FREQ_NEXT].values
+                X_day = day_eval[LGBM_FEATURE_COLS]
+                lower_day = lower_model.predict(X_day)
+                upper_day = upper_model.predict(X_day)
+
+                alpha_lower, alpha_upper = QUANTILE_ALPHAS  # 0.1, 0.9
+
+                # Pinball Loss
+                err_lower = y_true_day - lower_day
+                pb_lower = np.mean(np.maximum(alpha_lower * err_lower, (alpha_lower - 1) * err_lower))
+                err_upper = y_true_day - upper_day
+                pb_upper = np.mean(np.maximum(alpha_upper * err_upper, (alpha_upper - 1) * err_upper))
+
+                # PICP & MPIW
+                covered = ((y_true_day >= lower_day) & (y_true_day <= upper_day)).astype(int)
+                picp = np.mean(covered)
+                mpiw = np.mean(upper_day - lower_day)
+
+                # Calibration scores
+                cal_lower = np.mean(y_true_day < lower_day)
+                cal_upper = np.mean(y_true_day < upper_day)
+
+                # Display metrics
+                m1, m2 = st.columns(2)
+                m1.metric("Pinball Loss (Lower α=0.1)", f"{pb_lower:.6f}")
+                m2.metric("Pinball Loss (Upper α=0.9)", f"{pb_upper:.6f}")
+
+                m3, m4 = st.columns(2)
+                m3.metric("PICP (80% CI Coverage)", f"{picp:.2%}")
+                m4.metric("MPIW (Band Width)", f"{mpiw:.5f} Hz")
+
+                m5, m6 = st.columns(2)
+                m5.metric("Calibration α=0.1 (target: 10%)", f"{cal_lower:.2%}")
+                m6.metric("Calibration α=0.9 (target: 90%)", f"{cal_upper:.2%}")
+
+                st.metric("Evaluation Samples", f"{len(y_true_day):,}")
+
+                if picp >= 0.80:
+                    st.success("✅ PICP meets the 80% target — uncertainty bands are well-calibrated.")
+                else:
+                    st.warning(f"⚠️ PICP ({picp:.2%}) is below 80% — bands may be too narrow or biased.")
 
     st.markdown("---")
     st.info("The dashboard is now running in **Quantile Regression Mode**. The alert is triggered when the predicted lower bound of the frequency drops below the set threshold.")

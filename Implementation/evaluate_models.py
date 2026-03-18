@@ -6,7 +6,9 @@ Generates model performance metrics and dissertation-ready plots.
 
 Usage:
     cd Implementation/
-    uv run python evaluate_models.py
+    uv run python evaluate_models.py                                    # default Aug 2019
+    uv run python evaluate_models.py --start-date 2019-12-01 --end-date 2019-12-31  # winter
+    uv run python evaluate_models.py --calibrated                       # with recalibration
 """
 
 import os
@@ -100,8 +102,24 @@ def load_test_data(start_date: str, end_date: str):
 # ─── Main Evaluation ────────────────────────────────────────────────────────
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="GridGuardian Model Evaluation")
+    parser.add_argument("--start-date", default=WEATHER_API_DEFAULT_START_DATE,
+                        help="Evaluation start date (YYYY-MM-DD)")
+    parser.add_argument("--end-date", default=WEATHER_API_DEFAULT_END_DATE,
+                        help="Evaluation end date (YYYY-MM-DD)")
+    parser.add_argument("--calibrated", action="store_true",
+                        help="Apply post-hoc isotonic recalibration if calibrators exist")
+    args = parser.parse_args()
+
+    eval_start = args.start_date
+    eval_end = args.end_date
+
     print("=" * 70)
     print("  GridGuardian — Model Evaluation & Dashboard Validation")
+    print(f"  Period: {eval_start} → {eval_end}")
+    if args.calibrated:
+        print("  Mode: CALIBRATED (isotonic recalibration applied)")
     print("=" * 70)
 
     # 1. Load models
@@ -109,8 +127,20 @@ def main():
     upper_model = joblib.load("notebooks/lgbm_quantile_upper.pkl")
     print("✅ Models loaded.")
 
+    # Load calibrators if requested
+    lower_calibrator, upper_calibrator = None, None
+    if args.calibrated:
+        from src.config import LOWER_CALIBRATOR_PATH, UPPER_CALIBRATOR_PATH
+        try:
+            lower_calibrator = joblib.load(LOWER_CALIBRATOR_PATH)
+            upper_calibrator = joblib.load(UPPER_CALIBRATOR_PATH)
+            print("✅ Calibrators loaded.")
+        except FileNotFoundError:
+            print("⚠️  Calibrator files not found. Run run_pipeline.py first. Proceeding without calibration.")
+            args.calibrated = False
+
     # 2. Load data
-    df = load_test_data(WEATHER_API_DEFAULT_START_DATE, WEATHER_API_DEFAULT_END_DATE)
+    df = load_test_data(eval_start, eval_end)
 
     # Ensure target column exists
     if TARGET_FREQ_NEXT not in df.columns:
@@ -125,6 +155,12 @@ def main():
     X = df_eval[LGBM_FEATURE_COLS]
     lower_preds = lower_model.predict(X)
     upper_preds = upper_model.predict(X)
+
+    # Apply calibration if enabled
+    if args.calibrated and lower_calibrator and upper_calibrator:
+        from src.calibration import calibrate_predictions
+        lower_preds = calibrate_predictions(lower_calibrator, lower_preds)
+        upper_preds = calibrate_predictions(upper_calibrator, upper_preds)
 
     # ─────────────────────────────────────────────────────────────────────
     # 4. METRICS TABLE

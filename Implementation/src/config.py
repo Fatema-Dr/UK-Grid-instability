@@ -9,10 +9,28 @@ DATA_DIR = "data"
 
 # NESO CKAN API Configuration
 NESO_API_BASE_URL = "https://api.neso.energy/api/3/action"
-# Placeholder resource IDs - these would need to be dynamically retrieved or
-# updated with actual UUIDs from the NESO Data Portal for the relevant periods.
-NESO_FREQUENCY_RESOURCE_ID_2019_08 = "819a0821-cc6d-4909-a1ea-7dba5cab0c33" # Correct UUID for Aug 2019
-NESO_INERTIA_RESOURCE_ID_2019 = "620491fa-ae1b-45b3-baa0-6e87c2d574cf" # Correct UUID for 2019
+
+# Monthly frequency data resource IDs (2019) from the NESO Data Portal
+NESO_FREQUENCY_RESOURCE_MAP = {
+    "2019-01": "2a653f90-7948-4203-a49e-8763733debb2",
+    "2019-02": "3343dbfb-58ac-478a-8aed-618a35b38475",
+    "2019-03": "b4fc11ec-2f9b-465e-8974-37cc289f2aaa",
+    "2019-04": "5a511d6f-0cc4-4054-bb45-8ad3b81051ad",
+    "2019-05": "84a85749-18e1-4b6b-bb97-73888ccacfe0",
+    "2019-06": "f967b00a-36b4-4979-920e-77fdb6be8a9c",
+    "2019-07": "da48b1fe-8e54-48fc-87b9-f6b0362422e2",
+    "2019-08": "819a0821-cc6d-4909-a1ea-7dba5cab0c33",
+    "2019-09": "9ffafdfb-cf42-46b3-802f-a6d9a45794aa",
+    "2019-10": "65b4f284-4963-46c5-ae78-cab57fe5372f",
+    "2019-11": "3d1a42c0-5637-4702-b9c3-76a7c5d8f062",
+    "2019-12": "f0933bdd-1b0e-4dd3-aa7f-5498df1ba5b9",
+}
+# Legacy alias for backward compatibility
+NESO_FREQUENCY_RESOURCE_ID_2019_08 = NESO_FREQUENCY_RESOURCE_MAP["2019-08"]
+
+# Inertia data resource IDs
+NESO_INERTIA_RESOURCE_ID_2019 = "620491fa-ae1b-45b3-baa0-6e87c2d574cf"  # Daily costs
+NESO_INERTIA_HALFHOURLY_RESOURCE_ID = "2f2dbaa1-3047-4e48-85f2-ec24e669678f"  # Half-hourly system inertia 2019-2020
 
 # Directory to save exported models and data for the dashboard
 EXPORT_DIR = "notebooks" # Models are saved alongside the notebook
@@ -98,3 +116,17 @@ WEATHER_API_HOURLY_VARS = ["temperature_2m", "precipitation", "rain", "snowfall"
 WEATHER_API_DEFAULT_START_DATE = "2019-08-01"
 WEATHER_API_DEFAULT_END_DATE = "2019-08-31"
 
+# 5. CALIBRATION & VALIDATION
+# -----------------------------------------------------------------------------
+# Calibration split: a held-out subset BEFORE the test set, used for
+# post-hoc quantile recalibration via isotonic regression.
+CALIBRATION_START_DATE = "2019-08-07 00:00:00"
+CALIBRATION_END_DATE = "2019-08-09 00:00:00"   # same as SPLIT_DATE
+
+# Winter validation dates (for out-of-season robustness testing)
+WINTER_VALIDATION_START_DATE = "2019-12-01"
+WINTER_VALIDATION_END_DATE = "2019-12-31"
+
+# Calibrator model paths
+LOWER_CALIBRATOR_PATH = f"{EXPORT_DIR}/lower_calibrator.pkl"
+UPPER_CALIBRATOR_PATH = f"{EXPORT_DIR}/upper_calibrator.pkl"
