@@ -7,29 +7,9 @@ Covers: pinball_loss, PICP, MPIW, and calibration_score.
 import numpy as np
 import pytest
 
-
-# ---------------------------------------------------------------------------
-# Metric functions (duplicated from evaluate_models.py / model_trainer.py so
-# tests are self-contained and verify the formulas independently)
-# ---------------------------------------------------------------------------
-
-def pinball_loss(y_true, y_pred, alpha):
-    """Pinball (quantile) loss."""
-    error = y_true - y_pred
-    return np.mean(np.maximum(alpha * error, (alpha - 1) * error))
-
-
-def calculate_picp_mpiw(y_true, lower_bound, upper_bound):
-    """Prediction Interval Coverage Probability and Mean Prediction Interval Width."""
-    covered = ((y_true >= lower_bound) & (y_true <= upper_bound)).astype(int)
-    picp = np.mean(covered)
-    mpiw = np.mean(upper_bound - lower_bound)
-    return picp, mpiw
-
-
-def calibration_score(y_true, y_pred_quantile):
-    """Fraction of actual values falling below the predicted quantile."""
-    return np.mean(y_true < y_pred_quantile)
+# Import metric functions from source instead of duplicating them
+from src.model_trainer import pinball_loss, calculate_picp_mpiw
+from evaluate_models import calibration_score
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +64,7 @@ class TestPICPandMPIW:
         y = np.array([50.0, 49.9, 50.1])
         lower = np.array([49.5, 49.5, 49.5])
         upper = np.array([50.5, 50.5, 50.5])
-        picp, _ = calculate_picp_mpiw(y, lower, upper)
+        picp, _ = calculate_picp_mpiw(y, lower, upper, confidence_level=0.8)
         assert picp == pytest.approx(1.0)
 
     def test_none_covered(self):
@@ -92,14 +72,14 @@ class TestPICPandMPIW:
         y = np.array([48.0, 51.0, 48.5])
         lower = np.array([49.5, 49.5, 49.5])
         upper = np.array([50.5, 50.5, 50.5])
-        picp, _ = calculate_picp_mpiw(y, lower, upper)
+        picp, _ = calculate_picp_mpiw(y, lower, upper, confidence_level=0.8)
         assert picp == pytest.approx(0.0)
 
     def test_mpiw_is_band_width(self):
         """MPIW should equal the mean of (upper - lower)."""
         lower = np.array([49.5, 49.6, 49.7])
         upper = np.array([50.5, 50.4, 50.3])
-        _, mpiw = calculate_picp_mpiw(np.zeros(3), lower, upper)
+        _, mpiw = calculate_picp_mpiw(np.zeros(3), lower, upper, confidence_level=0.8)
         expected = np.mean(upper - lower)
         assert mpiw == pytest.approx(expected)
 
@@ -108,7 +88,7 @@ class TestPICPandMPIW:
         y = np.array([50.0, 48.0])  # 1 covered, 1 not
         lower = np.array([49.5, 49.5])
         upper = np.array([50.5, 50.5])
-        picp, _ = calculate_picp_mpiw(y, lower, upper)
+        picp, _ = calculate_picp_mpiw(y, lower, upper, confidence_level=0.8)
         assert picp == pytest.approx(0.5)
 
 
@@ -126,17 +106,17 @@ class TestCalibrationScore:
         # 10 samples, 1 below the prediction
         y_true = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=float)
         pred = np.full(10, 1.5)  # only value 1 is below 1.5
-        score = calibration_score(y_true, pred)
+        score = calibration_score(y_true, pred, alpha=0.1)
         assert score == pytest.approx(0.1)
 
     def test_all_below(self):
         """All actuals below prediction → score = 1.0."""
         y_true = np.array([1.0, 2.0, 3.0])
         pred = np.full(3, 10.0)
-        assert calibration_score(y_true, pred) == pytest.approx(1.0)
+        assert calibration_score(y_true, pred, alpha=0.1) == pytest.approx(1.0)
 
     def test_none_below(self):
         """No actuals below prediction → score = 0.0."""
         y_true = np.array([10.0, 20.0, 30.0])
         pred = np.full(3, 1.0)
-        assert calibration_score(y_true, pred) == pytest.approx(0.0)
+        assert calibration_score(y_true, pred, alpha=0.1) == pytest.approx(0.0)

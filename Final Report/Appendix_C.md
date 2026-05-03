@@ -289,6 +289,8 @@ During unprecedented conditions (e.g., multiple coincident outages):
 | **R** | Reset intervention simulator |
 | **H** | Toggle help overlay |
 
+*Note: The R shortcut may conflict with browser page refresh in some browsers; use Ctrl+R if the dashboard does not respond.*
+
 ---
 
 ## References

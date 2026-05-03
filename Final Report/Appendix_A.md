@@ -11,7 +11,7 @@ The Swinging Door Algorithm (SDA) compresses time-series data by retaining only 
 ```python
 import numpy as np
 import polars as pl
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 def optimized_swinging_door(
     data: List[Tuple[float, float]], 

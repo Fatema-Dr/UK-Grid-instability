@@ -1,16 +1,19 @@
 # src/feature_engineering.py
 
+import logging
 import polars as pl
 import pandas as pd
 from .config import TARGET_COL, TTA_SECONDS, OPSDA_WIDTH, LAG_INTERVALS_SECONDS # Import LAG_INTERVALS_SECONDS
 from . import opsda
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
 def merge_datasets(df_freq, df_weather, df_inertia):
     """
     Joins frequency, weather, and inertia data using a 'join_asof' strategy.
     """
-    print("Merging datasets...")
+    logger.info("Merging datasets...")
     df_freq = df_freq.sort("timestamp")
     df_weather = df_weather.sort("timestamp")
     df_inertia = df_inertia.sort("timestamp_date")
@@ -36,14 +39,14 @@ def merge_datasets(df_freq, df_weather, df_inertia):
     )
 
     df_merged = df_merged.drop_nulls()
-    print(f"Merged Dataset Shape: {df_merged.shape}")
+    logger.info(f"Merged Dataset Shape: {df_merged.shape}")
     return df_merged
 
 def calculate_wind_ramp_rate(df):
     """
     Calculates the wind ramp rate using the Swinging Door Algorithm.
     """
-    print("Calculating wind ramp rate...")
+    logger.info("Calculating wind ramp rate...")
     # Timestamps need to be converted to Unix time (seconds) for slope calculation
     weather_data = df[["timestamp", "wind_speed"]].drop_duplicates(subset=["timestamp"]).copy()
     weather_data['unix_ts'] = weather_data['timestamp'].astype(np.int64) // 1_000_000_000
@@ -79,12 +82,12 @@ def create_features(df):
     """
     Engineers features for the grid stability model.
     """
-    print("Engineering features...")
-    print(f"DEBUG: create_features input df shape: {df.shape}")
+    logger.info("Engineering features...")
+    logger.debug(f"create_features input df shape: {df.shape}")
     
     # First, calculate the wind ramp rate
     df = calculate_wind_ramp_rate(df)
-    print(f"DEBUG: df shape after calculate_wind_ramp_rate: {df.shape}")
+    logger.debug(f"df shape after calculate_wind_ramp_rate: {df.shape}")
     
     # Initialize df_features with the current df
     df_features = df.copy()
@@ -98,6 +101,8 @@ def create_features(df):
     df_features["renewable_penetration_ratio"] = (df_features["wind_speed"] * 3000) / 35000
 
     df_features["volatility_10s"] = df_features["grid_frequency"].rolling(window=10).std().fillna(0)
+    df_features["volatility_30s"] = df_features["grid_frequency"].rolling(window=30).std().fillna(0)
+    df_features["volatility_60s"] = df_features["grid_frequency"].rolling(window=60).std().fillna(0)
     df_features["hour"] = df_features["timestamp"].dt.hour
     df_features["minute"] = df_features["timestamp"].dt.minute
     df_features["target_freq_next"] = df_features["grid_frequency"].shift(-TTA_SECONDS)
@@ -115,10 +120,10 @@ def create_features(df):
     # If the column is still all NaNs (e.g., if opsda.compress returned no valid ramp rates), fill with 0
     df_features["wind_ramp_rate"] = df_features["wind_ramp_rate"].fillna(0)
     
-    print(f"DEBUG: df_features shape before dropna(): {df_features.shape}")
-    print(f"DEBUG: df_features null counts before dropna():\n{df_features.isnull().sum()[df_features.isnull().sum() > 0]}")
+    logger.debug(f"df_features shape before dropna(): {df_features.shape}")
+    logger.debug(f"df_features null counts before dropna():\n{df_features.isnull().sum()[df_features.isnull().sum() > 0]}")
 
     df_features = df_features.dropna()
-    print(f"DEBUG: df_features shape after dropna(): {df_features.shape}")
-    print(f"Feature Engineering Complete. Shape: {df_features.shape}")
+    logger.debug(f"df_features shape after dropna(): {df_features.shape}")
+    logger.info(f"Feature Engineering Complete. Shape: {df_features.shape}")
     return df_features

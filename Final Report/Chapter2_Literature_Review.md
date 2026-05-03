@@ -40,7 +40,7 @@ Tielens and Van Hertem (2016) demonstrated that inertia reductions below 100 GVA
 
 The August 9, 2019 event provides the most significant UK case study of low-inertia instability. Homan (2020) established that the blackout resulted from simultaneous loss of Little Barford (gas turbine trip) and Hornsea One (offshore wind farm disconnection), removing 1,481 MW within seconds. Frequency collapsed from 50 Hz to 48.8 Hz—exactly the statutory limit for automatic load shedding—in approximately 10 seconds.
 
-Ofgem and BEIS (2019) investigation revealed that protection settings across multiple generators had been configured assuming higher inertia levels than actually existed. This mismatch between assumed and actual system dynamics allowed cascading failures that extended beyond the initial disturbance. The report emphasised that traditional planning assumptions about inertia margins were no longer valid in renewable-dominated systems.
+The Ofgem and BEIS (2019) investigation—formally titled *Report on the Events of 9 August 2019 and System Operator Actions*—revealed that protection settings across multiple generators had been configured assuming higher inertia levels than actually existed. This mismatch between assumed and actual system dynamics allowed cascading failures that extended beyond the initial disturbance. The report emphasised that traditional planning assumptions about inertia margins were no longer valid in renewable-dominated systems.
 
 ### 2.3.3 Synthetic Inertia and Stability Services
 

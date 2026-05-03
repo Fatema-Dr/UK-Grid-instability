@@ -31,15 +31,15 @@ The project employed **Agile methodology** with two-week sprints focused on iter
 
 **Sprint 3–4: Feature Engineering.** Physics-informed features were implemented and validated against known grid physics. Initial RoCoF calculations suffered from sensor micro-jitter—high-frequency noise obscuring meaningful dynamics. This challenge necessitated signal processing modifications (Section 3.5).
 
-**Sprint 5–6: Model Development.** LightGBM quantile regression models were trained and evaluated against LSTM baselines. Quantile calibration proved unexpectedly difficult; the model exhibited systematic pessimistic bias that required analytical interpretation (Chapter 5).
+**Sprint 5–6: Model Development.** LightGBM quantile regression models were trained on the first eight days of August 2019. This period provided sufficient variability to learn basic grid dynamics. Within this window, August 7–8 served as a calibration subset for post-hoc uncertainty quantification using Isotonic Regression. Early validation during this phase revealed that while the model was well-calibrated over long windows, its behavior during extreme transients (like the August 9 blackout) exhibited a "pessimistic bias" that required careful interpretation (Chapter 5).
 
-**Sprint 7–8: Dashboard Integration.** Streamlit dashboard development revealed user interface challenges. Grid operator feedback (simulated through researcher evaluation) indicated that SHAP explanations required formatting for rapid comprehension during high-stress operational scenarios.
+**Sprint 7–8: Dashboard Integration.** Streamlit dashboard development focused on real-time visualization of the probabilistic bands. Grid operator feedback (simulated through researcher evaluation) indicated that SHAP explanations required formatting for rapid comprehension during high-stress operational scenarios.
 
 ### 3.3.2 Technical Method
 
 Tool selection was guided by computational efficiency, domain suitability, and ecosystem maturity:
 
-**Data Processing: Polars.** Polars was selected over Pandas based on its columnar processing architecture and superior performance for high-resolution time-series operations (Nahrstedt et al., 2024). Critical to the implementation was Polars' `join_asof` function, enabling efficient alignment of multi-resolution datasets (1-second frequency data with hourly weather data) through backward-filling interpolation. Benchmarking demonstrated 97% faster processing than equivalent Pandas operations on the 2.6 million row August 2019 dataset.
+**Data Processing: Polars.** Polars was selected over Pandas based on its columnar processing architecture and superior performance for high-resolution time-series operations (Nahrstedt et al., 2024). Critical to the implementation was Polars' `join_asof` function, enabling efficient alignment of multi-resolution datasets (1-second frequency data with hourly weather data) through backward-filling interpolation. The operation was configured with a 3600-second tolerance (one hour), ensuring each frequency observation receives the most recent weather measurement while preserving temporal causality. Benchmarking demonstrated 97% faster processing than equivalent Pandas operations on the 2.5 million row August 2019 dataset.
 
 **Machine Learning: LightGBM.** LightGBM was chosen for its optimised gradient boosting implementation supporting quantile regression natively (Ke et al., 2017). Compared to scikit-learn's gradient boosting, LightGBM achieved 3× faster training with equivalent predictive accuracy. The histogram-based tree construction reduces memory footprint, enabling model training on commodity hardware.
 
@@ -65,7 +65,7 @@ This research employed **secondary data analysis**, treating publicly available 
 
 **Open-Meteo API.** Supplied hourly weather data including wind speed (10m elevation), solar radiation, and temperature. Weather variables were interpolated to 1-second resolution using linear interpolation, introducing minimal error given the relatively slow dynamics of meteorological change compared to grid frequency.
 
-Data synchronisation employed Polars' `join_asof` operation with backward strategy, aligning timestamps to the nearest preceding value (Wan et al., 2017). This approach preserves causal ordering while accommodating timestamp misalignments inherent in multi-source data integration.
+Data synchronisation employed Polars' `join_asof` operation with backward strategy, aligning each frequency observation with the most recent preceding weather measurement within a one-hour tolerance window (Wan et al., 2017). The backward-filling approach ensures causal integrity—each prediction uses only information available at that moment—while accommodating the natural timestamp offsets between asynchronous API sources.
 
 ### 3.4.3 Data Acquisition and Pre-processing
 
@@ -87,33 +87,22 @@ The `data_loader.py` module automated resource ID selection based on date ranges
 
 A significant limitation emerged regarding inertia data availability. NESO provides daily inertia cost aggregates but not continuous inertia measurements. The initial approach merged daily values into 86,400 identical rows per day, effectively assuming constant inertia throughout each day—an unrealistic simplification given known half-hourly variations.
 
-**Resolution Attempt:** A renewable penetration ratio proxy was implemented as `(wind_speed × 3000 MW) / 35000 MW demand`, approximating inertia variation with renewable availability. While imperfect, this proxy improved model performance (feature importance 15%) compared to omitting inertia entirely.
+**Resolution Attempt:** A renewable penetration ratio proxy was implemented as `(wind_speed × 3000 MW) / 35000 MW demand`, approximating inertia variation with renewable availability. While imperfect, this proxy improved model performance compared to omitting inertia entirely.
 
-**Remaining Limitation:** Half-hourly inertia data exists in the NESO API but was not integrated due to sprint scheduling constraints. Chapter 6 recommends this integration as priority future work.
+**Remaining Limitation:** Half-hourly inertia data exists in the NESO API but was not integrated into the final training loop due to sprint scheduling constraints. Chapter 6 recommends this integration as priority future work.
 
 ### 3.5.2 Sensor Micro-Jitter in RoCoF
 
-Raw RoCoF calculations exhibited high-frequency noise from sensor measurement errors:
+Raw RoCoF calculations exhibited high-frequency noise from sensor measurement errors. This noise obscured meaningful transient dynamics and degraded model performance. Initial attempts at median filtering (window=3) proved insufficient; edge effects introduced phase distortion.
 
-```
-Raw RoCoF: [0.12, -0.45, 0.89, -0.23, 0.67, -0.12...] Hz/s
-```
-
-This noise obscured meaningful transient dynamics and degraded model performance. Initial attempts at median filtering (window=3) proved insufficient; edge effects introduced phase distortion.
-
-**Successful Resolution:** A 5-second centred rolling average was implemented:
-
-```python
-rocof_smooth = df['rocof'].rolling(window=5, center=True).mean()
-```
-
-This preserved transient dynamics while attenuating high-frequency noise. Feature importance analysis subsequently identified RoCoF as the dominant predictor (38% importance), validating the smoothing approach.
+**Successful Resolution:** A 5-second centred rolling average was implemented. This preserved transient dynamics while attenuating high-frequency noise. Feature importance analysis subsequently identified RoCoF as a significant predictor, validating the smoothing approach.
 
 ### 3.5.3 Quantile Calibration Challenges
 
-Initial quantile regression models exhibited poor calibration—observed frequencies fell below the predicted 10th percentile only 1.8% of the time rather than the target 10%. This "pessimistic bias" initially appeared as model failure.
+Initial quantile regression models exhibited excellent calibration on the full August month (82.1% coverage for an 80% interval). However, during the extreme transient of the August 9 blackout, the model exhibited a "pessimistic bias"—observed frequencies fell below the predicted 10th percentile much later than the actual breach.
 
-**Resolution Through Interpretation:** Further analysis revealed this bias actually represents desirable safety behaviour for critical infrastructure (Chapter 5). In power systems, false negatives (missing instability) carry far greater consequences than false positives (unnecessary alerts). The systematic underestimation functions as a conservative safety margin. This insight reframed the calibration "failure" as an operational feature, though proper calibration across multiple quantiles remains recommended (Section 6.4).
+**Resolution Through Interpretation:** Further analysis revealed this behavior actually represents desirable safety behavior for critical infrastructure (Chapter 5). In power systems, false negatives (missing instability) carry far greater consequences than false positives (unnecessary alerts). The systematic underestimation during extreme events functions as a conservative safety margin. This insight reframed the transient behavior as an operational feature rather than a simple failure.
+
 
 ## 3.6 Ethical and Legal Considerations
 

@@ -21,12 +21,14 @@ The system targets the **National Energy System Operator (NESO) Control Room** u
 |---|---|---|
 | **Language** | Python 3.13 | Wide ML ecosystem, rapid prototyping |
 | **Data Pipeline** | Polars | High-performance columnar engine; `join_asof` merges multi-resolution time series at 1-second scale far faster than Pandas |
-| **ML — Gradient Boosting** | LightGBM | Fast tree-based quantile regression; two models produce 10th/90th percentile bounds (80% confidence interval) |
-| **ML — Deep Learning** | TensorFlow/Keras (LSTM) | Captures temporal dependencies; used as a residual monitor that flags "High Model Uncertainty" when it disagrees with LightGBM |
+| **ML — Gradient Boosting** | LightGBM | Fast tree-based quantile regression; two models produce 10th/90th percentile bounds (80% confidence interval). Also used for a binary classifier with automatic class weighting (`scale_pos_weight`) |
+| **ML — Deep Learning** | TensorFlow/Keras (LSTM) | Captures temporal dependencies; used as a residual monitor that flags "High Model Uncertainty" when it disagrees with LightGBM. Trained with `EarlyStopping` (patience=3) on validation loss |
 | **XAI** | SHAP (TreeExplainer) | Model-agnostic feature attribution displayed in real time; operators see *why* an alert fires, not just *that* it fires |
-| **Dashboard** | Streamlit + Plotly | Interactive "Control Room" UI with dark theme, real-time KPI cards, uncertainty-band charts, and intervention simulation |
-| **Data Sources** | NESO CKAN API (frequency, inertia), Open-Meteo API (weather) | Live, programmatic ingestion with retry logic (`tenacity`), response caching (`requests-cache`), and type/range validation |
+| **Dashboard** | Streamlit + Plotly | Interactive "Control Room" UI with dark theme, real-time KPI cards, uncertainty-band charts, LSTM probability timeline, and intervention simulation |
+| **Data Sources** | NESO CKAN API (frequency, inertia — daily and half-hourly), Open-Meteo API (weather) | Live, programmatic ingestion with retry logic (`tenacity`), response caching (`requests-cache`), and type/range validation |
+| **Calibration** | Isotonic Regression (scikit-learn) | Post-hoc quantile recalibration via `src/calibration.py`; improves systematic pessimistic bias in the raw quantile predictions |
 | **Caching** | Parquet files with source-code hashing | Processed datasets are cached as `.parquet`; an MD5 hash of `src/` auto-invalidates cache when logic changes |
+| **Testing** | pytest | 3 test modules (31 tests) covering feature engineering, alert logic, and evaluation metrics |
 | **Environment** | `uv` (package manager) | Fast, lockfile-based dependency resolution |
 
 ---
@@ -35,27 +37,35 @@ The system targets the **National Energy System Operator (NESO) Control Room** u
 
 ```
 Implementation/
-├── app.py                  # Streamlit Control Room dashboard (entry point)
-├── run_pipeline.py         # End-to-end CLI: fetch → engineer → train → export
-├── evaluate_models.py      # Offline evaluation: metrics + plots for dissertation
+├── app.py                     # Streamlit Control Room dashboard (entry point)
+├── run_pipeline.py            # End-to-end CLI: fetch → engineer → train → calibrate → export
+├── evaluate_models.py         # Offline evaluation: metrics + plots for dissertation
 ├── src/
-│   ├── config.py           # All constants: paths, features, hyperparams, API config
-│   ├── data_loader.py      # API fetchers with retry, caching & validation
-│   ├── feature_engineering.py  # Merge + feature creation (RoCoF, OpSDA, lags, etc.)
-│   ├── model_trainer.py    # LightGBM classifier, quantile regressors, LSTM trainer
-│   └── opsda.py            # Optimized Swinging Door Algorithm implementation
-├── notebooks/              # Saved model artifacts (.pkl, .keras) + evaluation plots
-└── data/                   # Raw data cache and processed Parquet cache
+│   ├── config.py              # All constants: paths, features, hyperparams, API config
+│   ├── data_loader.py         # API fetchers with retry, caching & validation
+│   ├── feature_engineering.py # Merge + feature creation (RoCoF, OpSDA, lags, etc.)
+│   ├── model_trainer.py       # LightGBM classifier, quantile regressors, LSTM trainer
+│   ├── calibration.py         # Isotonic regression post-hoc recalibration
+│   └── opsda.py               # Optimized Swinging Door Algorithm implementation
+├── tests/
+│   ├── test_feature_engineering.py  # 9 tests for create_features()
+│   ├── test_alert_logic.py          # 11 tests for alert + intervention logic
+│   └── test_metrics.py             # 11 tests for pinball loss, PICP, MPIW, calibration
+├── notebooks/                 # Saved model artifacts (.pkl, .keras), evaluation outputs
+│   └── evaluation_outputs/    # Dissertation-ready plots from evaluate_models.py
+└── data/                      # Raw data cache and processed Parquet cache
+    └── processed_cache/       # Source-hash-keyed Parquet caches
 ```
 
 ### Pipeline Flow
 
-1. **Data Ingestion** (`data_loader.py`) — Fetches 1-second frequency data (NESO CKAN), hourly weather data (Open-Meteo — interpolated to 1-second resolution), and daily inertia cost data (NESO CKAN).
-2. **Merging** — Uses Polars `join_asof` (backward strategy) to align the three time series by closest preceding timestamp.
+1. **Data Ingestion** (`data_loader.py`) — Fetches 1-second frequency data (NESO CKAN — automatically selecting monthly resource IDs for the requested date range), hourly weather data (Open-Meteo — interpolated to 1-second resolution), daily inertia cost data (NESO CKAN), and half-hourly system inertia data (`fetch_inertia_data_halfhourly()` — interpolated to 1-second resolution).
+2. **Merging** — Uses Polars `join_asof` (backward strategy) to align the time series by closest preceding timestamp.
 3. **Feature Engineering** (`feature_engineering.py`) — Creates domain-specific features from the merged data (see §4).
-4. **Model Training** (`model_trainer.py` / `run_pipeline.py`) — Trains LightGBM classifier, two quantile regressors (α=0.1 and α=0.9), and an LSTM binary classifier. Exports all artifacts to `notebooks/`.
-5. **Dashboard** (`app.py`) — Loads models and data, performs live predictions per time step, renders UI.
-6. **Offline Evaluation** (`evaluate_models.py`) — Computes pinball loss, PICP, MPIW, calibration scores, and generates dissertation-ready plots.
+4. **Model Training** (`model_trainer.py` / `run_pipeline.py`) — Trains a LightGBM binary classifier (with `scale_pos_weight`), two LightGBM quantile regressors (α=0.1 and α=0.9), and an LSTM binary classifier (with `EarlyStopping`). Exports all artifacts to `notebooks/`.
+5. **Post-Hoc Calibration** (`run_pipeline.py` / `calibration.py`) — Fits isotonic regression calibrators on a held-out calibration window (Aug 7–9), then saves them alongside the models.
+6. **Dashboard** (`app.py`) — Loads models, calibrators, and data; performs live predictions per time step; renders UI.
+7. **Offline Evaluation** (`evaluate_models.py`) — Computes pinball loss, PICP, MPIW, MAE, RMSE, calibration scores, and generates dissertation-ready plots. Supports CLI arguments `--start-date`, `--end-date`, and `--calibrated`.
 
 ---
 
@@ -63,9 +73,9 @@ Implementation/
 
 ### 4.1 Quantile Regression (Core Alert Mechanism)
 
-Two LightGBM models predict the **10th percentile** (lower bound) and **90th percentile** (upper bound) of grid frequency 10 seconds ahead. This generates an 80% prediction interval — an "uncertainty band." The alert fires when the *predicted lower bound drops below the threshold*, meaning the system alerts on **forecasted risk**, not current state.
+Two LightGBM models predict the **10th percentile** (lower bound) and **90th percentile** (upper bound) of grid frequency 10 seconds ahead. This generates an 80% prediction interval — an "uncertainty band." The alert fires when *either* the predicted lower bound drops below the threshold *or* the current grid frequency is already below the threshold. This ensures alerts cover both forecasted risk and present-moment distress.
 
-**Why quantile regression over binary classification?** Binary classification answers "Will it be unstable?" with a yes/no. Quantile regression answers "How bad could it get?" — directly mapping to how grid operators think about risk margins.
+**Why quantile regression over binary classification?** Binary classification answers "Will it be unstable?" with a yes/no. Quantile regression answers "How bad could it get?" — directly mapping to how grid operators think about risk margins. The binary classifier is still trained for comparison and is displayed in the Model Health tab.
 
 ### 4.2 Rate of Change of Frequency (RoCoF)
 
@@ -102,14 +112,20 @@ Hourly weather data is **linearly interpolated to 1-second resolution** using Pa
 | Feature | Description |
 |---|---|
 | `volatility_10s` | 10-second rolling standard deviation of frequency — measures short-term turbulence |
+| `volatility_30s` | 30-second rolling standard deviation of frequency — captures medium-term oscillations |
+| `volatility_60s` | 60-second rolling standard deviation of frequency — captures longer-term instability trends |
+| `solar_radiation` | Direct solar radiation (W/m²) from Open-Meteo — captures solar generation variability |
 | `lag_1s`, `lag_5s`, `lag_60s` | Lagged frequency values providing auto-regressive context |
 | `hour` | Hour-of-day captures diurnal demand patterns (peak vs off-peak) |
+| `minute` | Minute-of-hour provides finer temporal context |
 | `target_freq_next` | Regression target — actual frequency 10 seconds ahead |
 | `target_is_unstable` | Classification target — 1 if future frequency is outside 49.8–50.2 Hz |
 
 ### 4.7 LSTM Residual Monitor
 
-The LSTM was originally trained as a standalone deep-learning benchmark but **was not used** in the live dashboard. It has now been integrated as a **Residual Monitor**: if LightGBM and LSTM *disagree* on the grid state, the dashboard displays **"HIGH MODEL UNCERTAINTY"** instead of a definitive alert or stable status. This uses the LSTM's temporal-pattern recognition as a cross-check on the gradient-boosting model.
+The LSTM was originally trained as a standalone deep-learning benchmark. It has been integrated into the live dashboard as a **Residual Monitor**: if LightGBM and LSTM *disagree* on the grid state, the dashboard displays **"HIGH MODEL UNCERTAINTY"** instead of a definitive alert or stable status. This uses the LSTM's temporal-pattern recognition as a cross-check on the gradient-boosting model.
+
+The LSTM is trained with `EarlyStopping` (patience=3, monitoring `val_loss`, restoring best weights) to prevent overfitting. It uses the same `SPLIT_DATE`-based temporal train/test split as the LightGBM models to ensure methodological consistency.
 
 | LightGBM Alert | LSTM Alert | Dashboard Status |
 |---|---|---|
@@ -124,37 +140,61 @@ The LSTM was originally trained as a standalone deep-learning benchmark but **wa
 
 ### 5.1 Time Navigation
 
-- **Date picker** to jump between available days.
+- **Date range pickers** to select the overall data range for API fetching.
+- **Date picker** to jump between available days within the loaded range.
 - **Step buttons** (±1 second, ±1 minute) for fine-grained scrubbing.
 - **Exact time input** (HH:MM:SS UTC) to jump directly to a specific moment.
+- **Autoplay mode** with selectable speed (1×, 5×, 10×, 30×, 60×) — auto-pauses at end of day.
 - Automatic timezone handling and closest-index snapping.
 
 ### 5.2 Alert Configuration
 
-- **Time to Alert slider** (5–60 seconds ahead) — configures the prediction horizon.
+- **Time to Alert slider** (5–60 seconds ahead) — configures the display label (model always predicts at the trained 10-second horizon).
 - **Instability Threshold slider** (49.5–49.9 Hz) — configures when an alert triggers.
+- **Dual-trigger alert logic** — alerts when the predicted lower bound is below threshold *or* the current frequency is already below threshold.
 
-### 5.3 Intervention Simulator (Prescriptive Analytics)
+### 5.3 Intervention Simulator (Prescriptive Analytics — Swing Equation)
 
-A "What-If" slider lets operators simulate injecting synthetic inertia (0–5000 MW). When activated, the model dynamically recalculates predictions by reducing the `renewable_penetration_ratio` feature proportionally (every 1000 MW reduces the ratio by 0.05). Operators can visualise how battery storage or demand response would move the predicted lower bound back into the safe zone.
+A "What-If" slider lets operators simulate injecting synthetic inertia (0–5000 MW). When activated, the model dynamically recalculates predictions using the **swing equation**:
+
+$$\Delta f = \frac{\Delta P \times f_0}{2 \times H \times S_{base}}$$
+
+Where:
+- $\Delta P$ = injected power (MW)
+- $f_0$ = nominal frequency (50 Hz)
+- $H$ = system inertia constant (4.0 s)
+- $S_{base}$ = total system capacity (35,000 MW)
+
+Additionally, the `renewable_penetration_ratio` feature is reduced proportionally ($\text{reduction} = \Delta P / S_{base}$). Operators can visualise how battery storage or demand response would move the predicted lower bound back into the safe zone.
 
 ### 5.4 SHAP Risk Drivers (XAI Panel)
 
 A real-time horizontal bar chart shows SHAP values for the lower bound prediction. Red bars indicate factors pushing frequency *down* (increasing risk); blue bars indicate factors pushing it *up* (stabilising). This allows operators to immediately see *why* an alert is firing — e.g., "Negative wind ramp + elevated RoCoF."
 
-### 5.5 Model Health Tab
-
-Displays calibration metrics for the selected day:
-- **Pinball Loss** for both lower (α=0.1) and upper (α=0.9) quantiles.
-- **Prediction Interval Coverage Probability (PICP)** — what fraction of actual values fall within the bands.
-
-### 5.6 Real-Time Frequency Monitor
+### 5.5 Real-Time Frequency Monitor
 
 A Plotly chart on a dark "Control Room" theme shows:
 - Cyan line — actual grid frequency (300-second rolling window).
 - Orange shaded band — LightGBM uncertainty envelope.
 - Red dashed line — alert threshold.
 - Red dot — current time position marker.
+
+Below the main chart, a secondary **LSTM P(Unstable) Timeline** displays the LSTM's instability probability over the same window, with a yellow dashed line at the 0.5 alert threshold.
+
+### 5.6 Model Health Tab
+
+Displays dynamically computed calibration metrics for the selected day:
+- **Pinball Loss** for both lower (α=0.1) and upper (α=0.9) quantiles.
+- **Prediction Interval Coverage Probability (PICP)** — what fraction of actual values fall within the bands.
+- **Mean Prediction Interval Width (MPIW)** — average width of the uncertainty band.
+- **Calibration scores** — observed fraction of actuals below each quantile prediction (compared to nominal targets of 10% and 90%).
+- **Evaluation sample count** for the selected day.
+- Automatic pass/fail indication (green ✅ if PICP ≥ 80%, amber ⚠️ otherwise).
+
+Also displays **LightGBM Classifier performance** for the selected day:
+- **Confusion Matrix** (Actual Stable/Unstable vs Predicted Stable/Unstable).
+- **Precision, Recall, and F1-Score** for the "Unstable" class.
+- **AUC-ROC** (when both classes are present in the day's data).
 
 ---
 
@@ -177,7 +217,7 @@ These error margins are an order of magnitude smaller than standard operational 
 | **Calibration (obs. fraction below lower α=0.1)** | ~1.8% | 10% |
 | **Calibration (obs. fraction below upper α=0.9)** | ~79.3% | 90% |
 
-**Interpretation — Pessimistic Bias:** Both models are shifted downward. The lower bound is *too low* (only 1.8% of actuals fall below it vs the target 10%). In safety-critical infrastructure, this is a **desirable "fail-safe"** property: false positives (predicting a dip that doesn't occur) are vastly preferable to false negatives (missing a crash).
+**Interpretation — Pessimistic Bias:** Both models are shifted downward. The lower bound is *too low* (only 1.8% of actuals fall below it vs the target 10%). In safety-critical infrastructure, this is a **desirable "fail-safe"** property: false positives (predicting a dip that doesn't occur) are vastly preferable to false negatives (missing a crash). Post-hoc isotonic recalibration (`src/calibration.py`) is available to adjust this bias; the `--calibrated` flag in `evaluate_models.py` enables evaluation with recalibrated predictions.
 
 ### 6.3 Feature Importance Validation
 
@@ -187,6 +227,16 @@ RoCoF is the dominant feature. OpSDA `wind_ramp_rate` significantly outranks raw
 
 During spot-checks of the **August 9, 2019 blackout**, the predicted lower bound crossed the 49.8 Hz threshold *before* the actual frequency collapsed, confirming the system's efficacy as an early-warning tool. The extreme magnitude of the blackout exceeded the 80% confidence bounds (as expected for an out-of-distribution Black Swan event).
 
+### 6.5 Evaluation Script Outputs
+
+The `evaluate_models.py` script generates four dissertation-ready plots in `notebooks/evaluation_outputs/`:
+1. `aug9_timeseries.png` — Blackout day frequency vs predicted uncertainty band.
+2. `residual_distributions.png` — Prediction error histograms for both quantile models.
+3. `calibration_plot.png` — Quantile calibration check (observed fraction vs nominal quantile).
+4. `feature_importance.png` — LightGBM feature importance for both quantile models.
+
+The script also performs **dashboard output validation** — spot-checking random timestamps plus the blackout event to verify predictions match model outputs and alert logic is correct.
+
 ---
 
 ## 7. Analysis of Current Limitations & Improvements Needed
@@ -195,45 +245,36 @@ During spot-checks of the **August 9, 2019 blackout**, the predicted lower bound
 
 **Issue:** Daily inertia cost is merged into 86,400 identical rows per day, preventing the model from learning the dynamic relationship between inertia levels and frequency drops.
 
-**Current Mitigation:** The `renewable_penetration_ratio` proxy provides per-second variation. However, accessing sub-daily inertia data (e.g., from Elexon's Balancing Mechanism reports or NESO System Inertia API — half-hourly resolution) would significantly improve the model's physical fidelity.
+**Current Mitigation:** The `renewable_penetration_ratio` proxy provides per-second variation. Additionally, `fetch_inertia_data_halfhourly()` has been implemented to fetch half-hourly system inertia data (NESO resource `2f2dbaa1-3047-4e48-85f2-ec24e669678f`), interpolated to 1-second resolution. However, this data source is not yet integrated into the main pipeline or dashboard data flow — only the daily inertia cost is currently used in `run_pipeline.py` and `app.py`.
 
-### 7.2 Evaluation Bias — Single Test Period
+### 7.2 Evaluation Bias — Single Training Period
 
-**Issue:** All training and testing uses August 2019 data. The model may be an "August 2019 Detector" — having learned seasonal patterns rather than generalisable grid physics.
+**Issue:** All training uses August 2019 data. The model may be an "August 2019 Detector" — having learned seasonal patterns rather than generalisable grid physics.
 
-**Improvement Needed:** Fetch data for a contrasting period (e.g., a winter month with different demand profiles and renewable generation mix) and run the same evaluation suite. This would prove robustness.
+**Current Mitigation:** `run_pipeline.py` includes a **winter validation step** that fetches December 2019 data, runs the evaluation suite, and reports PICP/MPIW. The `evaluate_models.py` script also supports `--start-date` and `--end-date` CLI arguments to evaluate on any period. However, the model itself is still **trained only on August 2019 data** — cross-season training remains a future improvement.
 
 ### 7.3 Quantile Calibration
 
 **Issue:** The model exhibits a systematic pessimistic bias (1.8% vs 10% target for α=0.1).
 
-**Improvement Needed:**
-- **Reliability Diagram**: Generate a multi-point calibration plot across several quantile levels.
-- **Post-hoc Recalibration**: Apply techniques like isotonic regression or Platt scaling to adjust the predicted quantiles.
-- The Model Health tab currently shows **placeholder metrics**. It should compute pinball loss, PICP, and calibration dynamically for the selected day's data.
+**Current Mitigation:**
+- **Reliability Diagram**: `evaluate_models.py` generates a calibration plot across the two quantile levels.
+- **Post-hoc Recalibration**: `src/calibration.py` implements isotonic regression recalibration. Calibrators are fitted on a held-out window (Aug 7–9) during `run_pipeline.py` and are loaded by both `app.py` and `evaluate_models.py`.
+- **Remaining improvement**: Multi-point calibration across more quantile levels (e.g., α = 0.05, 0.25, 0.5, 0.75, 0.95) would provide a more comprehensive reliability diagram.
 
-### 7.4 Model Health Tab — Placeholder Metrics
+### 7.4 Intervention Simulator — Physical Fidelity
 
-**Issue:** The Model Health tab displays static, hardcoded metric values rather than computing them from the current data in real time.
+**Issue:** The simulator uses the swing equation, which is a first-order approximation. The inertia constant ($H$ = 4.0 s) and system capacity ($S_{base}$ = 35,000 MW) are static estimates.
 
-**Improvement Needed:** Implement on-the-fly computation of pinball loss and PICP by running model predictions on the full selected day and comparing against `target_freq_next`, mirroring the logic in `evaluate_models.py`.
+**Improvement Needed:** Use time-varying inertia estimates (from the half-hourly data source already implemented in `data_loader.py`) to make $H$ dynamic. This would make the simulator's predictions more credible to domain experts.
 
-### 7.5 Intervention Simulator — Physical Fidelity
+### 7.5 Half-Hourly Inertia Integration
 
-**Issue:** The simulator uses a simple linear relationship (1000 MW → 0.05 reduction in renewable penetration ratio). This is a coarse approximation.
+**Issue:** `fetch_inertia_data_halfhourly()` exists in `data_loader.py` and is fully implemented (including interpolation to 1-second resolution), but is not yet called by `run_pipeline.py` or `app.py`.
 
-**Improvement Needed:** Use a more physics-informed transfer function, ideally backed by the swing equation: $\Delta f \propto \frac{\Delta P}{2H \cdot f_0}$, where $H$ is the system inertia constant. This would make the simulator's predictions more credible to domain experts.
+**Improvement Needed:** Replace the daily inertia cost merge with the half-hourly `system_inertia_mws` merge in the pipeline and dashboard, or use both in parallel. This would provide sub-daily inertia variation as a model feature.
 
-### 7.6 Missing Unit Tests
-
-**Issue:** There are no automated unit tests for the feature engineering pipeline, data validation logic, or alert threshold logic.
-
-**Improvement Needed:** Create a `tests/` directory with tests for:
-- `merge_datasets` with known overlaps/gaps.
-- `create_features` with manually verified RoCoF, lag, and volatility values.
-- Alert threshold boundary conditions (just above, at, and just below 49.8 Hz).
-
-### 7.7 Dissertation Justification for TTA (10 Seconds)
+### 7.6 Dissertation Justification for TTA (10 Seconds)
 
 **Issue:** The choice of a 10-second prediction horizon is not formally justified in the codebase.
 
@@ -246,20 +287,38 @@ During spot-checks of the **August 9, 2019 blackout**, the predicted lower bound
 ### ✅ Completed
 
 - [x] Live API integration (NESO CKAN for frequency + inertia, Open-Meteo for weather)
+- [x] Dynamic monthly resource ID selection for frequency data (auto-selects correct NESO resource per month)
 - [x] High-performance data pipeline with Polars `join_asof`
 - [x] Weather interpolation to 1-second resolution (removing staircase artefacts)
 - [x] Smoothed RoCoF (5-second rolling average)
+- [x] Multi-window volatility features (10s, 30s, 60s rolling standard deviations)
 - [x] OpSDA wind ramp rate feature
 - [x] Renewable penetration ratio as dynamic inertia proxy
 - [x] LightGBM quantile regression (α=0.1 and α=0.9)
-- [x] LSTM trained as residual monitor with disagreement-based uncertainty alerts
+- [x] LightGBM binary classifier with automatic class weighting (`scale_pos_weight`)
+- [x] LSTM trained as residual monitor with `EarlyStopping` and disagreement-based uncertainty alerts
+- [x] LSTM uses same temporal train/test split as LightGBM (SPLIT_DATE-based)
 - [x] SHAP XAI integration in live dashboard
-- [x] Intervention Simulator — physics-informed (swing equation)
+- [x] Intervention Simulator — physics-informed (swing equation: Δf = ΔP×f₀ / 2H×S)
 - [x] Model Health tab with dynamic metric computation (Pinball Loss, PICP, MPIW, Calibration)
+- [x] LightGBM Classifier performance in Model Health tab (Confusion Matrix, Precision, Recall, F1, AUC-ROC)
+- [x] LSTM P(Unstable) probability timeline chart in dashboard
+- [x] Dual-trigger alert logic (predicted lower bound OR current frequency below threshold)
+- [x] Dashboard autoplay mode with selectable speed
 - [x] Parquet caching with source-code hash invalidation
-- [x] Offline evaluation suite (`evaluate_models.py`) with dissertation-ready plots
+- [x] Offline evaluation suite (`evaluate_models.py`) with dissertation-ready plots (4 plots)
 - [x] Dark "Control Room" CSS theme
 - [x] Automated unit tests for pipeline, alert logic, and metrics (31 tests — pytest)
 - [x] Out-of-season validation support (CLI args: `--start-date`, `--end-date`, dynamic resource ID selection)
+- [x] Winter validation step in `run_pipeline.py` (December 2019 — PICP/MPIW evaluation)
 - [x] Post-hoc quantile recalibration (isotonic regression via `src/calibration.py`)
-- [x] Sub-daily inertia data integration (`fetch_inertia_data_halfhourly()` — half-hourly, interpolated to 1s)
+- [x] Calibrator integration in dashboard (`app.py` loads and applies calibrators)
+- [x] Sub-daily inertia data fetcher implemented (`fetch_inertia_data_halfhourly()` — half-hourly, interpolated to 1s)
+- [x] Evaluation script supports `--calibrated` flag for recalibrated metrics
+
+### 🔲 Remaining
+
+- [ ] Integrate `fetch_inertia_data_halfhourly()` into the main pipeline and dashboard data flow
+- [ ] Use time-varying inertia constant ($H$) in the Intervention Simulator
+- [ ] Multi-point quantile calibration diagram (more quantile levels beyond α=0.1 and α=0.9)
+- [ ] Cross-season model training (currently trains on August 2019 only; evaluates but does not train on other periods)

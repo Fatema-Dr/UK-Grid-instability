@@ -58,6 +58,8 @@ LGBM_FEATURE_COLS = [
     "grid_frequency", 
     "rocof", 
     "volatility_10s",
+    "volatility_30s",
+    "volatility_60s",
     "wind_speed",
     "wind_ramp_rate",
     "solar_radiation", 
@@ -69,9 +71,13 @@ LGBM_FEATURE_COLS = [
 LSTM_FEATURE_COLS = [
     "grid_frequency", 
     "rocof", 
-    "volatility_10s", 
+    "volatility_10s",
+    "volatility_30s",
+    "volatility_60s",
     "wind_speed",
     "wind_ramp_rate",
+    "solar_radiation",
+    "hour",
     "renewable_penetration_ratio"
 ] + [f"lag_{lag}s" for lag in LAG_INTERVALS_SECONDS]
 

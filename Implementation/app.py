@@ -9,7 +9,14 @@ import shap
 import hashlib
 from pathlib import Path
 import tensorflow as tf
-from src.config import TTA_SECONDS, LGBM_FEATURE_COLS, LSTM_FEATURE_COLS, LSTM_TIME_STEPS, WEATHER_API_DEFAULT_START_DATE, WEATHER_API_DEFAULT_END_DATE, TARGET_FREQ_NEXT, QUANTILE_ALPHAS, LOWER_CALIBRATOR_PATH, UPPER_CALIBRATOR_PATH
+from src.config import (
+    TTA_SECONDS, LGBM_FEATURE_COLS, LSTM_FEATURE_COLS, LSTM_TIME_STEPS,
+    WEATHER_API_DEFAULT_START_DATE, WEATHER_API_DEFAULT_END_DATE,
+    TARGET_FREQ_NEXT, TARGET_COL, QUANTILE_ALPHAS,
+    LOWER_CALIBRATOR_PATH, UPPER_CALIBRATOR_PATH,
+    LGBM_QUANTILE_LOWER_PATH, LGBM_QUANTILE_UPPER_PATH,
+    LSTM_MODEL_PATH, SCALER_PATH, LGBM_MODEL_PATH
+)
 from src.data_loader import fetch_frequency_data, fetch_inertia_data, fetch_weather_data
 from src.feature_engineering import create_features
 from datetime import date
@@ -85,14 +92,15 @@ def load_resources_and_data(start_date_str: str, end_date_str: str):
     cache_filename = f"processed_data_{start_date_str}_to_{end_date_str}_{src_hash}.parquet"
     cache_path = CACHE_DIR / cache_filename
     
-    # Define paths
-    lower_model_path = "notebooks/lgbm_quantile_lower.pkl"
-    upper_model_path = "notebooks/lgbm_quantile_upper.pkl"
-    lstm_model_path = "notebooks/lstm_model.keras"
-    scaler_path = "notebooks/scaler.pkl"
+    # Define paths using config constants
+    lower_model_path = LGBM_QUANTILE_LOWER_PATH
+    upper_model_path = LGBM_QUANTILE_UPPER_PATH
+    lstm_model_path = LSTM_MODEL_PATH
+    scaler_path = SCALER_PATH
+    classifier_path = LGBM_MODEL_PATH
     
     # Check for models
-    required_models = [lower_model_path, upper_model_path, lstm_model_path, scaler_path]
+    required_models = [lower_model_path, upper_model_path, lstm_model_path, scaler_path, classifier_path]
     missing = [f for f in required_models if not os.path.exists(f)]
     if missing:
         st.error(f"🚨 MISSING MODEL FILES ERROR: {', '.join(missing)}")
@@ -102,6 +110,7 @@ def load_resources_and_data(start_date_str: str, end_date_str: str):
     # Load Models
     lower_model = joblib.load(lower_model_path)
     upper_model = joblib.load(upper_model_path)
+    classifier_model = joblib.load(classifier_path)
     lstm_model = tf.keras.models.load_model(lstm_model_path)
     scaler = joblib.load(scaler_path)
     
@@ -185,7 +194,7 @@ def load_resources_and_data(start_date_str: str, end_date_str: str):
         upper_calibrator = joblib.load(UPPER_CALIBRATOR_PATH)
         st.sidebar.success("✅ Quantile calibrators loaded")
     
-    return lower_model, upper_model, lstm_model, scaler, df_data, explainer, lower_calibrator, upper_calibrator
+    return lower_model, upper_model, classifier_model, lstm_model, scaler, df_data, explainer, lower_calibrator, upper_calibrator
 
 
 # -----------------------------------------------------------------------------
@@ -206,7 +215,7 @@ with col_date2:
     selected_end_date = st.date_input("End Date", value=default_end_date)
 
 # Load resources based on selected dates
-lower_model, upper_model, lstm_model, scaler, df_data, explainer, lower_calibrator, upper_calibrator = load_resources_and_data(
+lower_model, upper_model, classifier_model, lstm_model, scaler, df_data, explainer, lower_calibrator, upper_calibrator = load_resources_and_data(
     selected_start_date.strftime("%Y-%m-%d"),
     selected_end_date.strftime("%Y-%m-%d")
 )
@@ -272,6 +281,30 @@ else: # Only proceed if df_data is not empty
         if st.button("+1m ▶"):
             st.session_state.time_nav_index = min(len(global_indices_for_day) - 1, st.session_state.time_nav_index + 60)
             st.rerun()
+
+    # Autoplay toggle
+    if "autoplay" not in st.session_state:
+        st.session_state.autoplay = False
+
+    autoplay_col1, autoplay_col2 = st.sidebar.columns(2)
+    with autoplay_col1:
+        if st.button("▶ Play" if not st.session_state.autoplay else "⏸ Pause"):
+            st.session_state.autoplay = not st.session_state.autoplay
+            st.rerun()
+    with autoplay_col2:
+        autoplay_speed = st.selectbox("Speed", [1, 5, 10, 30, 60], index=0, label_visibility="collapsed")
+
+    if st.session_state.autoplay:
+        import time
+        time.sleep(1.0)
+        st.session_state.time_nav_index = min(
+            len(global_indices_for_day) - 1,
+            st.session_state.time_nav_index + autoplay_speed
+        )
+        if st.session_state.time_nav_index >= len(global_indices_for_day) - 1:
+            st.session_state.autoplay = False  # Stop at end of day
+        st.rerun()
+
     # 4. Exact Time Input (Replaces heavy slider)
     current_time_val = day_timestamps[st.session_state.time_nav_index].time()
     
@@ -314,7 +347,9 @@ else: # Only proceed if df_data is not empty
     tta_seconds_user = st.sidebar.slider(
         "Time to Alert (seconds ahead)", 5, 60, TTA_SECONDS, 5
     )
-    TTA_SECONDS = tta_seconds_user
+    # Note: The model was trained with TTA_SECONDS=10. This slider only controls
+    # the display label; predictions always reflect the 10-second training horizon.
+    st.sidebar.caption(f"ℹ️ Model trained at {TTA_SECONDS}s horizon. Slider adjusts display only.")
 
     alert_threshold_hz = st.sidebar.slider("Instability Threshold (Hz)", 49.5, 49.9, 49.8, 0.05)
 
@@ -361,7 +396,8 @@ else: # Only proceed if df_data is not empty
     lower_bound_pred = lower_bound_raw + swing_delta_f
     upper_bound_pred = upper_bound_raw + swing_delta_f
 
-    is_alert = lower_bound_pred < alert_threshold_hz
+    # Alert if predicted lower bound is below threshold OR current frequency already is
+    is_alert = lower_bound_pred < alert_threshold_hz or current_row['grid_frequency'] < alert_threshold_hz
 
     # LSTM Prediction for Residual Monitoring
     window_start_idx = max(0, time_index - LSTM_TIME_STEPS + 1)
@@ -392,10 +428,10 @@ else: # Only proceed if df_data is not empty
     
         if is_alert and lstm_alert:
             col4.error(f"⚠️ INSTABILITY ALERT")
-            col5.metric("Time to Alert", f"{TTA_SECONDS} sec", "⚠️")
+            col5.metric("Time to Alert", f"{tta_seconds_user} sec", "⚠️")
         elif is_alert or lstm_alert:
             col4.warning(f"⚠️ HIGH MODEL UNCERTAINTY")
-            col5.metric("Time to Alert", f"{TTA_SECONDS} sec", "⚠️")
+            col5.metric("Time to Alert", f"{tta_seconds_user} sec", "⚠️")
         else:
             col4.success(f"✅ SYSTEM STABLE")
             col5.metric("Time to Alert", "N/A")
@@ -442,6 +478,38 @@ else: # Only proceed if df_data is not empty
 
             fig.update_layout(template="plotly_dark", yaxis_title="Frequency (Hz)", margin=dict(l=0, r=0, t=0, b=0), height=400, yaxis_range=[49.4, 50.4])
             st.plotly_chart(fig, width='stretch')
+
+            # --- LSTM Probability Timeline ---
+            st.caption("LSTM P(Unstable) Timeline")
+            lstm_probs = []
+            lstm_timestamps = []
+            # Sample every 10th point to keep it fast
+            step = max(1, len(chart_data) // 60)
+            for i in range(0, len(chart_data), step):
+                global_idx = start_idx + i
+                w_start = max(0, global_idx - LSTM_TIME_STEPS + 1)
+                lstm_window = df_data.iloc[w_start : global_idx + 1]
+                if len(lstm_window) == LSTM_TIME_STEPS:
+                    lstm_sc = scaler.transform(lstm_window[LSTM_FEATURE_COLS])
+                    prob = lstm_model.predict(np.array([lstm_sc]), verbose=0)[0][0]
+                    lstm_probs.append(float(prob))
+                    lstm_timestamps.append(chart_data.iloc[i]['timestamp'])
+
+            if lstm_timestamps:
+                fig_lstm = go.Figure()
+                fig_lstm.add_trace(go.Scatter(
+                    x=lstm_timestamps, y=lstm_probs,
+                    mode='lines', name='P(Unstable)',
+                    line=dict(color='#FF6B6B', width=2),
+                    fill='tozeroy', fillcolor='rgba(255,107,107,0.15)'
+                ))
+                fig_lstm.add_hline(y=0.5, line_dash="dash", line_color="yellow", annotation_text="Alert Threshold (0.5)")
+                fig_lstm.update_layout(
+                    template="plotly_dark", height=150,
+                    margin=dict(l=0, r=0, t=0, b=0),
+                    yaxis_title="P(Unstable)", yaxis_range=[0, 1]
+                )
+                st.plotly_chart(fig_lstm, width='stretch')
 
     with col_xai:
         st.subheader(f"Risk Drivers for Instability ({TTA_SECONDS}s Ahead)")
@@ -533,6 +601,39 @@ else: # Only proceed if df_data is not empty
                     st.success("✅ PICP meets the 80% target — uncertainty bands are well-calibrated.")
                 else:
                     st.warning(f"⚠️ PICP ({picp:.2%}) is below 80% — bands may be too narrow or biased.")
+
+        # --- LightGBM Classifier Performance ---
+        st.markdown("---")
+        st.subheader("LightGBM Classifier — Confusion Matrix")
+        st.write("Classification performance of the LightGBM binary classifier for the selected day.")
+
+        if day_eval.empty or len(day_eval) < 10:
+            st.warning("Not enough data on this day to compute classifier metrics.")
+        else:
+            from sklearn.metrics import confusion_matrix, classification_report
+            y_true_cls = day_eval[TARGET_COL].values
+            y_pred_cls = classifier_model.predict(day_eval[LGBM_FEATURE_COLS])
+            y_pred_proba_cls = classifier_model.predict_proba(day_eval[LGBM_FEATURE_COLS])[:, 1]
+
+            cm = confusion_matrix(y_true_cls, y_pred_cls)
+            cls_report = classification_report(y_true_cls, y_pred_cls, target_names=["Stable", "Unstable"], output_dict=True)
+
+            # Display confusion matrix as a table
+            cm_df = pd.DataFrame(cm, index=["Actual Stable", "Actual Unstable"], columns=["Pred Stable", "Pred Unstable"])
+            st.dataframe(cm_df, use_container_width=True)
+
+            # Display classification report as metrics
+            cr1, cr2, cr3 = st.columns(3)
+            cr1.metric("Precision (Unstable)", f"{cls_report['Unstable']['precision']:.4f}")
+            cr2.metric("Recall (Unstable)", f"{cls_report['Unstable']['recall']:.4f}")
+            cr3.metric("F1-Score (Unstable)", f"{cls_report['Unstable']['f1-score']:.4f}")
+
+            try:
+                from sklearn.metrics import roc_auc_score
+                auc = roc_auc_score(y_true_cls, y_pred_proba_cls)
+                st.metric("AUC-ROC", f"{auc:.4f}")
+            except ValueError:
+                st.info("AUC-ROC unavailable — only one class present in this day's data.")
 
     st.markdown("---")
     st.info("The dashboard is now running in **Quantile Regression Mode**. The alert is triggered when the predicted lower bound of the frequency drops below the set threshold.")

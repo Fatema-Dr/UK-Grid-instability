@@ -1,4 +1,4 @@
-# ⚡ GridGuardian v2 — UK Power Grid Stability Alert System
+# ⚡ GridGuardian — UK Power Grid Stability Alert System
 
 > A real-time machine learning system that predicts and explains electrical grid instability in the UK's low-inertia, high-renewable energy landscape.
 

@@ -4,12 +4,6 @@ import sys
 import subprocess
 from pathlib import Path
 
-def install_dependencies():
-    """
-    Installs all required dependencies using pip.
-    """
-    print("Dependencies should be managed by uv.")
-    pass
 
 def main():
     """
@@ -106,8 +100,45 @@ def main():
     save_calibrator(upper_calibrator, UPPER_CALIBRATOR_PATH)
     print("All models and calibrators saved.")
 
+    # 8. Winter Validation (out-of-season robustness test)
+    print("\n--- Running Winter Validation ---")
+    from src.config import WINTER_VALIDATION_START_DATE, WINTER_VALIDATION_END_DATE
+    try:
+        df_freq_w = fetch_frequency_data(WINTER_VALIDATION_START_DATE, WINTER_VALIDATION_END_DATE)
+        df_weather_w = fetch_weather_data(WINTER_VALIDATION_START_DATE, WINTER_VALIDATION_END_DATE)
+        df_inertia_w = fetch_inertia_data(WINTER_VALIDATION_START_DATE, WINTER_VALIDATION_END_DATE)
+
+        if df_freq_w.is_empty() or df_weather_w.is_empty() or df_inertia_w.is_empty():
+            print("⚠️  Winter data unavailable — skipping validation.")
+        else:
+            df_merged_w = merge_datasets(df_freq_w, df_weather_w, df_inertia_w)
+            df_merged_w_pd = df_merged_w.to_pandas()
+            df_winter = create_features(df_merged_w_pd)
+
+            from src.config import TARGET_FREQ_NEXT as TFN_W
+            df_winter_eval = df_winter.dropna(subset=[TFN_W])
+            if len(df_winter_eval) > 100:
+                import numpy as np_w
+                y_true_w = df_winter_eval[TFN_W].values
+                X_w = df_winter_eval[LGBM_FEATURE_COLS]
+                lower_w = lower_model.predict(X_w)
+                upper_w = upper_model.predict(X_w)
+                covered_w = ((y_true_w >= lower_w) & (y_true_w <= upper_w)).astype(int)
+                picp_w = np_w.mean(covered_w)
+                mpiw_w = np_w.mean(upper_w - lower_w)
+                print(f"  Winter PICP (80% CI): {picp_w:.4f} (target ≥ 0.8)")
+                print(f"  Winter MPIW (Hz):     {mpiw_w:.6f}")
+                print(f"  Winter samples:       {len(y_true_w):,}")
+                if picp_w >= 0.80:
+                    print("  ✅ Winter validation passes.")
+                else:
+                    print(f"  ⚠️  Winter PICP ({picp_w:.4f}) below 80% — model may not generalise well.")
+            else:
+                print("⚠️  Not enough winter data for validation.")
+    except Exception as e:
+        print(f"⚠️  Winter validation failed: {e}")
+
     print("\nPipeline finished successfully!")
 
 if __name__ == "__main__":
-    install_dependencies()
     main()

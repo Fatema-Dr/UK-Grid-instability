@@ -181,7 +181,7 @@ def main():
     print("  MODEL PERFORMANCE METRICS")
     print("=" * 70)
     print(f"  Evaluation samples: {len(y_true):,}")
-    print(f"  Date range:         {WEATHER_API_DEFAULT_START_DATE} → {WEATHER_API_DEFAULT_END_DATE}")
+    print(f"  Date range:         {eval_start} → {eval_end}")
     print("-" * 70)
     print(f"  {'Metric':<40} {'Lower (α=0.1)':>14} {'Upper (α=0.9)':>14}")
     print("-" * 70)

@@ -1,5 +1,6 @@
 # src/model_trainer.py
 
+import pandas as pd
 import polars as pl
 import lightgbm as lgb
 import tensorflow as tf
@@ -141,11 +142,15 @@ def train_lstm_model(df_processed):
     Trains the LSTM model.
     """
     print("Preparing data for LSTM (Deep Learning)...")
-    data = df_processed.select(LSTM_FEATURE_COLS + [TARGET_COL]).to_pandas()
+    data = df_processed.select(LSTM_FEATURE_COLS + [TARGET_COL, "timestamp"]).to_pandas()
 
-    split_idx = int(len(data) * (8/31))
-    train_data = data.iloc[:split_idx]
-    test_data = data.iloc[split_idx:split_idx + 86400]
+    # Use SPLIT_DATE for temporal consistency with LightGBM models
+    split_dt = datetime.strptime(SPLIT_DATE, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    end_dt = datetime.strptime(END_TEST_DATE, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    data['timestamp'] = pd.to_datetime(data['timestamp'], utc=True)
+
+    train_data = data[data['timestamp'] < split_dt].drop(columns=['timestamp'])
+    test_data = data[(data['timestamp'] >= split_dt) & (data['timestamp'] < end_dt)].drop(columns=['timestamp'])
 
     print(f"Train samples: {len(train_data)}, Test samples: {len(test_data)}")
 
@@ -154,7 +159,7 @@ def train_lstm_model(df_processed):
     test_scaled = scaler.transform(test_data[LSTM_FEATURE_COLS])
 
     print("Creating sequences (this may take a moment)...")
-    X_train, y_train = create_lstm_sequences(train_scaled[-50000:], train_data[TARGET_COL].iloc[-50000:], time_steps=LSTM_TIME_STEPS)
+    X_train, y_train = create_lstm_sequences(train_scaled, train_data[TARGET_COL], time_steps=LSTM_TIME_STEPS)
     X_test, y_test = create_lstm_sequences(test_scaled, test_data[TARGET_COL], time_steps=LSTM_TIME_STEPS)
 
     print(f"LSTM Input Shape: {X_train.shape}")
