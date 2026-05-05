@@ -106,6 +106,7 @@ def main():
     joblib.dump(lgbm_classifier, LGBM_MODEL_PATH)
     joblib.dump(lower_model, LGBM_QUANTILE_LOWER_PATH)
     joblib.dump(upper_model, LGBM_QUANTILE_UPPER_PATH)
+    joblib.dump(quantile_models, f"{EXPORT_DIR}/lgbm_quantiles_all.pkl")
     lstm_model.save(LSTM_MODEL_PATH)
     joblib.dump(scaler, SCALER_PATH)
     save_calibrator(lower_calibrator, LOWER_CALIBRATOR_PATH)

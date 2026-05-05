@@ -17,8 +17,8 @@ from src.config import (
     LGBM_QUANTILE_LOWER_PATH, LGBM_QUANTILE_UPPER_PATH,
     LSTM_MODEL_PATH, SCALER_PATH, LGBM_MODEL_PATH
 )
-from src.data_loader import fetch_frequency_data, fetch_inertia_data, fetch_weather_data
-from src.feature_engineering import create_features
+from src.data_loader import fetch_frequency_data, fetch_inertia_data_halfhourly, fetch_weather_data
+from src.feature_engineering import create_features, merge_datasets
 from datetime import date
 
 # -----------------------------------------------------------------------------
@@ -114,6 +114,9 @@ def load_resources_and_data(start_date_str: str, end_date_str: str):
     lstm_model = tf.keras.models.load_model(lstm_model_path)
     scaler = joblib.load(scaler_path)
     
+    quantiles_all_path = "notebooks/lgbm_quantiles_all.pkl"
+    quantile_models = joblib.load(quantiles_all_path) if os.path.exists(quantiles_all_path) else None
+    
     # --- Check Cache Hit ---
     if cache_path.exists():
         st.sidebar.success(f"⚡ Loaded from cache for {start_date_str}")
@@ -140,7 +143,7 @@ def load_resources_and_data(start_date_str: str, end_date_str: str):
             st.stop()
 
         # Fetch inertia data
-        df_inertia = fetch_inertia_data(
+        df_inertia = fetch_inertia_data_halfhourly(
             start_date=start_date_str,
             end_date=end_date_str
         )
@@ -149,26 +152,8 @@ def load_resources_and_data(start_date_str: str, end_date_str: str):
             st.stop()
 
         # --- Merge Datasets ---
-        df_freq = df_freq.sort("timestamp")
-        df_weather = df_weather.sort("timestamp")
-        df_inertia = df_inertia.sort("timestamp_date")
-
-        df_merged = df_freq.join_asof(
-            df_weather,
-            on="timestamp",
-            strategy="backward"
-        )
-        df_inertia = df_inertia.with_columns(
-            pl.col("timestamp_date").cast(pl.Datetime(time_unit="us", time_zone="UTC")).alias("timestamp")
-        )
-
-        df_merged = df_merged.join_asof(
-            df_inertia.select(["timestamp", "inertia_cost"]),
-            on="timestamp",
-            strategy="backward"
-        )
-        
-        df_merged = df_merged.drop_nulls().to_pandas() # Convert to Pandas DataFrame for SHAP and joblib models
+        df_merged_pl = merge_datasets(df_freq, df_weather, df_inertia)
+        df_merged = df_merged_pl.to_pandas() # Convert to Pandas DataFrame for SHAP and joblib models
         
         # --- Feature Engineering ---
         df_data = create_features(df_merged)
@@ -194,7 +179,7 @@ def load_resources_and_data(start_date_str: str, end_date_str: str):
         upper_calibrator = joblib.load(UPPER_CALIBRATOR_PATH)
         st.sidebar.success("✅ Quantile calibrators loaded")
     
-    return lower_model, upper_model, classifier_model, lstm_model, scaler, df_data, explainer, lower_calibrator, upper_calibrator
+    return lower_model, upper_model, classifier_model, lstm_model, scaler, df_data, explainer, lower_calibrator, upper_calibrator, quantile_models
 
 
 # -----------------------------------------------------------------------------
@@ -215,7 +200,7 @@ with col_date2:
     selected_end_date = st.date_input("End Date", value=default_end_date)
 
 # Load resources based on selected dates
-lower_model, upper_model, classifier_model, lstm_model, scaler, df_data, explainer, lower_calibrator, upper_calibrator = load_resources_and_data(
+lower_model, upper_model, classifier_model, lstm_model, scaler, df_data, explainer, lower_calibrator, upper_calibrator, quantile_models = load_resources_and_data(
     selected_start_date.strftime("%Y-%m-%d"),
     selected_end_date.strftime("%Y-%m-%d")
 )
@@ -263,11 +248,11 @@ else: # Only proceed if df_data is not empty
     # Ensure index is within bounds of current day
     st.session_state.time_nav_index = min(max(0, st.session_state.time_nav_index), len(global_indices_for_day) - 1)
 
-    # 3. Step buttons
+    # 3. Step buttons (Simplified: ±5s and ±1s)
     btn_col1, btn_col2, btn_col3, btn_col4 = st.sidebar.columns(4)
     with btn_col1:
-        if st.button("◀ -1m"):
-            st.session_state.time_nav_index = max(0, st.session_state.time_nav_index - 60)
+        if st.button("◀ -5s"):
+            st.session_state.time_nav_index = max(0, st.session_state.time_nav_index - 5)
             st.rerun()
     with btn_col2:
         if st.button("◀ -1s"):
@@ -278,8 +263,8 @@ else: # Only proceed if df_data is not empty
             st.session_state.time_nav_index = min(len(global_indices_for_day) - 1, st.session_state.time_nav_index + 1)
             st.rerun()
     with btn_col4:
-        if st.button("+1m ▶"):
-            st.session_state.time_nav_index = min(len(global_indices_for_day) - 1, st.session_state.time_nav_index + 60)
+        if st.button("+5s ▶"):
+            st.session_state.time_nav_index = min(len(global_indices_for_day) - 1, st.session_state.time_nav_index + 5)
             st.rerun()
 
     # Autoplay toggle
@@ -343,13 +328,11 @@ else: # Only proceed if df_data is not empty
     # --- Alert Configuration (TTA + Threshold grouped) ---
     st.sidebar.markdown("---")
     st.sidebar.subheader("⚙️ Alert Configuration")
-
+    
     tta_seconds_user = st.sidebar.slider(
         "Time to Alert (seconds ahead)", 5, 60, TTA_SECONDS, 5
     )
-    # Note: The model was trained with TTA_SECONDS=10. This slider only controls
-    # the display label; predictions always reflect the 10-second training horizon.
-    st.sidebar.caption(f"ℹ️ Model trained at {TTA_SECONDS}s horizon. Slider adjusts display only.")
+    st.sidebar.caption(f"ℹ️ Model trained at {TTA_SECONDS}s horizon.")
 
     alert_threshold_hz = st.sidebar.slider("Instability Threshold (Hz)", 49.5, 49.9, 49.8, 0.05)
 
@@ -361,16 +344,15 @@ else: # Only proceed if df_data is not empty
         help="Simulate adding battery or demand response to improve grid stability."
     )
 
+    # -----------------------------------------------------------------------------
+    # 4. PREDICTION LOGIC (Calculated early for UI feedback)
+    # -----------------------------------------------------------------------------
+    input_lgbm = pd.DataFrame([current_row[LGBM_FEATURE_COLS].values], columns=LGBM_FEATURE_COLS)
+
     # Swing-equation constants for physics-informed intervention
     SYSTEM_INERTIA_H = 4.0    # Typical UK grid inertia constant (seconds)
     NOMINAL_FREQ = 50.0       # Nominal grid frequency (Hz)
     TOTAL_SYSTEM_CAPACITY = 35000  # Approximate UK system capacity (MW)
-
-
-    # -----------------------------------------------------------------------------
-    # 4. PREDICTION LOGIC
-    # -----------------------------------------------------------------------------
-    input_lgbm = pd.DataFrame([current_row[LGBM_FEATURE_COLS].values], columns=LGBM_FEATURE_COLS)
 
     # Apply Intervention Simulator logic using the Swing Equation:
     # Δf = (ΔP × f₀) / (2 × H × S_base)
@@ -378,11 +360,9 @@ else: # Only proceed if df_data is not empty
     if synthetic_inertia_mw > 0:
         # 1. Physics-based frequency uplift from the swing equation
         swing_delta_f = (synthetic_inertia_mw * NOMINAL_FREQ) / (2 * SYSTEM_INERTIA_H * TOTAL_SYSTEM_CAPACITY)
-        # 2. Adjust the renewable penetration proxy — injected inertia reduces the
-        #    effective non-synchronous generation fraction
+        # 2. Adjust the renewable penetration proxy
         intervention_effect = (synthetic_inertia_mw / TOTAL_SYSTEM_CAPACITY)
         input_lgbm['renewable_penetration_ratio'] = np.maximum(0, input_lgbm['renewable_penetration_ratio'] - intervention_effect)
-        st.sidebar.caption(f"⚡ Swing Eq: Δf = ({synthetic_inertia_mw} × {NOMINAL_FREQ}) / (2 × {SYSTEM_INERTIA_H} × {TOTAL_SYSTEM_CAPACITY}) = **+{swing_delta_f:.4f} Hz**")
 
     lower_bound_raw = lower_model.predict(input_lgbm)[0]
     upper_bound_raw = upper_model.predict(input_lgbm)[0]
@@ -396,19 +376,34 @@ else: # Only proceed if df_data is not empty
     lower_bound_pred = lower_bound_raw + swing_delta_f
     upper_bound_pred = upper_bound_raw + swing_delta_f
 
-    # Alert if predicted lower bound is below threshold OR current frequency already is
-    is_alert = lower_bound_pred < alert_threshold_hz or current_row['grid_frequency'] < alert_threshold_hz
-
     # LSTM Prediction for Residual Monitoring
     window_start_idx = max(0, time_index - LSTM_TIME_STEPS + 1)
     lstm_input_df = df_data.iloc[window_start_idx : time_index + 1]
     
     lstm_alert = False
+    lstm_prob = 0.0
     if len(lstm_input_df) == LSTM_TIME_STEPS:
         lstm_input_scaled = scaler.transform(lstm_input_df[LSTM_FEATURE_COLS])
         lstm_input_seq = np.array([lstm_input_scaled])
         lstm_prob = lstm_model.predict(lstm_input_seq, verbose=0)[0][0]
         lstm_alert = lstm_prob > 0.5
+
+    # Alert if predicted lower bound is below threshold OR current frequency already is
+    is_alert = lower_bound_pred < alert_threshold_hz or current_row['grid_frequency'] < alert_threshold_hz
+
+
+    # --- Sidebar UI components ---
+    with st.sidebar.expander("🔍 Alert Debugging"):
+        st.write(f"Threshold: {alert_threshold_hz} Hz")
+        st.write(f"Current Freq: {current_row['grid_frequency']:.4f} Hz")
+        st.write(f"LGBM Lower: {lower_bound_pred:.4f} Hz")
+        st.write(f"is_alert (LGBM): {'✅' if (lower_bound_pred < alert_threshold_hz or current_row['grid_frequency'] < alert_threshold_hz) else '❌'}")
+        st.write(f"LSTM Prob: {lstm_prob:.4f}")
+        st.write(f"lstm_alert: {'✅' if lstm_prob > 0.5 else '❌'}")
+    
+    if synthetic_inertia_mw > 0:
+        st.sidebar.caption(f"⚡ Swing Eq: Δf = ({synthetic_inertia_mw} × {NOMINAL_FREQ}) / (2 × {SYSTEM_INERTIA_H} × {TOTAL_SYSTEM_CAPACITY}) = **+{swing_delta_f:.4f} Hz**")
+
 
 
     # -----------------------------------------------------------------------------
@@ -466,9 +461,36 @@ else: # Only proceed if df_data is not empty
             # Alert Threshold line
             fig.add_hline(y=alert_threshold_hz, line_dash="dash", line_color="red", annotation_text="Alert Threshold")
 
-            # Uncertainty Band
-            fig.add_trace(go.Scatter(x=chart_data['timestamp'], y=upper_preds, fill=None, mode='lines', line_color='rgba(255,255,255,0)', showlegend=False))
-            fig.add_trace(go.Scatter(x=chart_data['timestamp'], y=lower_preds, fill='tonexty', mode='lines', line_color='rgba(255,255,255,0)', fillcolor='rgba(255, 165, 0, 0.2)', name='Uncertainty Band'))
+            if quantile_models is not None:
+                alphas = sorted(quantile_models.keys())
+                num_pairs = len(alphas) // 2
+                for i in range(num_pairs):
+                    a_low = alphas[i]
+                    a_high = alphas[-(i+1)]
+                    pred_low = quantile_models[a_low].predict(window_input)
+                    pred_high = quantile_models[a_high].predict(window_input)
+                    
+                    # Apply simple intervention logic delta
+                    pred_low += swing_delta_f
+                    pred_high += swing_delta_f
+                    
+                    opacity = 0.1 + (0.3 * (i / num_pairs))
+                    
+                    if i == 0:
+                        name = f'{int((a_high - a_low)*100)}% CI'
+                        fig.add_trace(go.Scatter(x=chart_data['timestamp'], y=pred_high, fill=None, mode='lines', line_color='rgba(255,255,255,0)', showlegend=False))
+                        fig.add_trace(go.Scatter(x=chart_data['timestamp'], y=pred_low, fill='tonexty', mode='lines', line_color='rgba(255,255,255,0)', fillcolor=f'rgba(255, 165, 0, {opacity})', name=name))
+                    else:
+                        name = f'{int((a_high - a_low)*100)}% CI'
+                        fig.add_trace(go.Scatter(x=chart_data['timestamp'], y=pred_high, fill=None, mode='lines', line_color='rgba(255,255,255,0)', showlegend=False))
+                        fig.add_trace(go.Scatter(x=chart_data['timestamp'], y=pred_low, fill='tonexty', mode='lines', line_color='rgba(255,255,255,0)', fillcolor=f'rgba(255, 165, 0, {opacity})', showlegend=False, hoverinfo='skip'))
+            else:
+                lower_preds = lower_model.predict(window_input) + swing_delta_f
+                upper_preds = upper_model.predict(window_input) + swing_delta_f
+
+                # Uncertainty Band
+                fig.add_trace(go.Scatter(x=chart_data['timestamp'], y=upper_preds, fill=None, mode='lines', line_color='rgba(255,255,255,0)', showlegend=False))
+                fig.add_trace(go.Scatter(x=chart_data['timestamp'], y=lower_preds, fill='tonexty', mode='lines', line_color='rgba(255,255,255,0)', fillcolor='rgba(255, 165, 0, 0.2)', name='Uncertainty Band'))
             
             # Actual Frequency Line
             fig.add_trace(go.Scatter(x=chart_data['timestamp'], y=chart_data['grid_frequency'], mode='lines', name='Actual Frequency', line=dict(color='#00CCFF', width=2)))
@@ -565,7 +587,8 @@ else: # Only proceed if df_data is not empty
                 lower_day = lower_model.predict(X_day)
                 upper_day = upper_model.predict(X_day)
 
-                alpha_lower, alpha_upper = QUANTILE_ALPHAS  # 0.1, 0.9
+                alpha_lower = 0.10
+                alpha_upper = 0.90
 
                 # Pinball Loss
                 err_lower = y_true_day - lower_day

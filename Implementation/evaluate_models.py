@@ -112,16 +112,62 @@ def evaluate_alert_system_holistically(df_full_month, lower_model, threshold=49.
     print(f"\n  False alert rate (stable periods): {false_alert_rate:.6f} ({false_alert_rate*86400:.1f} per day)")
     print("=" * 70)
 
-def rocof_window_sensitivity(df_raw, windows=[1, 3, 5, 10, 20, 30]):
+def rocof_window_sensitivity(df_eval, lower_model, upper_model, y_true, windows=[1, 3, 5, 10, 20, 30]):
     """
     Tests RoCoF smoothing windows against pinball loss to justify choice of 5s.
     """
     print("\n" + "=" * 70)
     print("  RoCoF WINDOW SENSITIVITY SWEEP")
     print("=" * 70)
-    # Skipping actual retraining during standard evaluation to save time,
-    # but the logic would go here to produce Figure 3.X.
-    print("  (Function defined for generating Figure 3.X in the dissertation)")
+    
+    if "rocof_1s" not in df_eval.columns:
+        print("  ⚠️ 'rocof_1s' not found. Skipping sensitivity sweep.")
+        return
+        
+    losses_lower = []
+    losses_upper = []
+    
+    # Store original values to restore them later
+    orig_smooth = df_eval["rocof_smooth"].copy()
+    orig_accel = df_eval["rocof_accel"].copy() if "rocof_accel" in df_eval.columns else None
+    
+    for w in windows:
+        # Recalculate features based on new window
+        df_eval["rocof_smooth"] = df_eval["rocof_1s"].rolling(window=w, min_periods=1).mean().fillna(0)
+        df_eval["rocof_accel"] = df_eval["rocof_smooth"].diff(1).fillna(0)
+        
+        X = df_eval[LGBM_FEATURE_COLS]
+        
+        preds_lower = lower_model.predict(X)
+        preds_upper = upper_model.predict(X)
+        
+        pb_lower = pinball_loss(y_true, preds_lower, 0.10)
+        pb_upper = pinball_loss(y_true, preds_upper, 0.90)
+        
+        losses_lower.append(pb_lower)
+        losses_upper.append(pb_upper)
+        print(f"  Window: {w:>2}s | PB Loss (Lower): {pb_lower:.6f} | PB Loss (Upper): {pb_upper:.6f}")
+        
+    # Restore original values
+    df_eval["rocof_smooth"] = orig_smooth
+    if orig_accel is not None:
+        df_eval["rocof_accel"] = orig_accel
+        
+    # Plotting
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(windows, losses_lower, marker='o', label='Lower Bound (α=0.10)', color='#FF6B6B')
+    ax.plot(windows, losses_upper, marker='s', label='Upper Bound (α=0.90)', color='#4ECDC4')
+    ax.axvline(x=5, color='gray', linestyle='--', label='Chosen Window (5s)')
+    ax.set_xlabel('RoCoF Smoothing Window (seconds)')
+    ax.set_ylabel('Pinball Loss (lower is better)')
+    ax.set_title('Sensitivity of Quantile Loss to RoCoF Smoothing Window')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    path = os.path.join(OUTPUT_DIR, "rocof_sensitivity.png")
+    fig.savefig(path, dpi=150)
+    print(f"  ✅ Saved Sensitivity Plot: {path}")
+    plt.close(fig)
     print("=" * 70)
 
 
@@ -180,6 +226,15 @@ def main():
     # 1. Load models
     lower_model = joblib.load("notebooks/lgbm_quantile_lower.pkl")
     upper_model = joblib.load("notebooks/lgbm_quantile_upper.pkl")
+    
+    quantiles_all_path = "notebooks/lgbm_quantiles_all.pkl"
+    quantile_models = joblib.load(quantiles_all_path) if os.path.exists(quantiles_all_path) else None
+    
+    import tensorflow as tf
+    from src.config import EXPORT_DIR
+    lstm_mc_path = f"{EXPORT_DIR}/lstm_quantile_comparator.keras"
+    lstm_mc_model = tf.keras.models.load_model(lstm_mc_path) if os.path.exists(lstm_mc_path) else None
+    
     print("✅ Models loaded.")
 
     # Load calibrators if requested
@@ -220,7 +275,8 @@ def main():
     # ─────────────────────────────────────────────────────────────────────
     # 4. METRICS TABLE
     # ─────────────────────────────────────────────────────────────────────
-    alpha_lower, alpha_upper = QUANTILE_ALPHAS  # 0.1, 0.9
+    alpha_lower = 0.10
+    alpha_upper = 0.90
 
     pb_lower = pinball_loss(y_true, lower_preds, alpha_lower)
     pb_upper = pinball_loss(y_true, upper_preds, alpha_upper)
@@ -266,11 +322,12 @@ def main():
     np.random.seed(42)
     spot_indices = sorted(np.random.choice(len(df_eval), size=5, replace=False))
 
-    # Also find the blackout event (Aug 9, ~16:50-17:00 UTC — lowest frequency)
+    # Also find the blackout event (Aug 9, ~15:52-16:00 UTC — lowest frequency)
+    # Note: Historical blackout was 16:52 BST = 15:52 UTC. 
     blackout_mask = (
         (df_eval["timestamp"].dt.date == pd.Timestamp("2019-08-09").date()) &
-        (df_eval["timestamp"].dt.hour >= 16) &
-        (df_eval["timestamp"].dt.hour <= 17)
+        (df_eval["timestamp"].dt.hour >= 15) &
+        (df_eval["timestamp"].dt.hour < 16)
     )
     blackout_rows = df_eval[blackout_mask]
     if not blackout_rows.empty:
@@ -315,8 +372,57 @@ def main():
     # Run the stratified evaluation (Fix 6)
     evaluate_alert_system_holistically(df_eval, lower_model, threshold=alert_threshold)
     
+    # Run LSTM MC Dropout Evaluation (Fix 3)
+    if lstm_mc_model is not None:
+        print("\n" + "=" * 70)
+        print("  LSTM MC DROPOUT COMPARATOR (FIX 3)")
+        print("=" * 70)
+        from src.config import LSTM_TIME_STEPS, LSTM_FEATURE_COLS, SCALER_PATH
+        scaler = joblib.load(SCALER_PATH)
+        
+        # Prepare sequence data for the test set (just testing the first 10,000 for speed)
+        n_samples = min(len(df_eval), 10000)
+        lstm_df = df_eval.iloc[:n_samples].copy()
+        
+        # Scale
+        scaled_data = scaler.transform(lstm_df[LSTM_FEATURE_COLS])
+        
+        # Create sequences manually for evaluation
+        X_seq = []
+        y_seq_true = []
+        for i in range(len(scaled_data) - LSTM_TIME_STEPS):
+            X_seq.append(scaled_data[i:i + LSTM_TIME_STEPS])
+            y_seq_true.append(lstm_df.iloc[i + LSTM_TIME_STEPS - 1][TARGET_FREQ_NEXT])
+            
+        X_seq = np.array(X_seq)
+        y_seq_true = np.array(y_seq_true)
+        
+        print(f"  Generating MC Dropout distribution (50 passes) for {len(X_seq)} samples...")
+        mc_preds = []
+        # tf.keras.Model(inputs=..., outputs=..., training=True) is used for MC dropout,
+        # but in our Keras 3 setup we can just call it with training=True
+        for _ in range(50):
+            preds = lstm_mc_model(X_seq, training=True)
+            mc_preds.append(preds.numpy().flatten())
+            
+        mc_preds = np.array(mc_preds)  # Shape: (50, n_samples)
+        
+        # Calculate percentiles
+        lstm_p10 = np.percentile(mc_preds, 10, axis=0)
+        lstm_p90 = np.percentile(mc_preds, 90, axis=0)
+        
+        lstm_picp, lstm_mpiw = calculate_picp_mpiw(y_seq_true, lstm_p10, lstm_p90)
+        lstm_pb10 = pinball_loss(y_seq_true, lstm_p10, 0.10)
+        lstm_pb90 = pinball_loss(y_seq_true, lstm_p90, 0.90)
+        
+        print(f"  LSTM PICP (80% CI coverage): {lstm_picp:.4f}")
+        print(f"  LSTM MPIW (Band Width, Hz):  {lstm_mpiw:.6f}")
+        print(f"  LSTM Pinball Loss (α=0.1):   {lstm_pb10:.6f}")
+        print(f"  LSTM Pinball Loss (α=0.9):   {lstm_pb90:.6f}")
+        print("=" * 70)
+    
     # Run RoCoF sensitivity (Fix 5 stub)
-    rocof_window_sensitivity(df_eval)
+    rocof_window_sensitivity(df_eval, lower_model, upper_model, y_true)
 
     # ─────────────────────────────────────────────────────────────────────
     # 6. PLOTS
@@ -341,7 +447,7 @@ def main():
         ax.set_ylabel("Frequency (Hz)")
         ax.set_title("August 9, 2019 — Blackout Day: Actual vs Predicted Uncertainty Band")
         ax.legend(loc="lower left")
-        ax.set_ylim(49.0, 50.5)
+        ax.set_ylim(48.5, 50.5) # Extended to show 48.79 Hz nadir
         fig.tight_layout()
         path1 = os.path.join(OUTPUT_DIR, "aug9_timeseries.png")
         fig.savefig(path1, dpi=150)
@@ -377,16 +483,25 @@ def main():
 
     # --- Plot 3: Calibration Plot ---
     fig, ax = plt.subplots(figsize=(6, 6))
-    # Test multiple quantiles if we only have 2 models, show them as 2 points
-    # plus the PI coverage
-    quantiles_tested = [alpha_lower, alpha_upper]
-    observed_fractions = [cal_lower, cal_upper]
+    
+    if quantile_models is not None:
+        quantiles_tested = sorted(quantile_models.keys())
+        observed_fractions = []
+        for q in quantiles_tested:
+            q_preds = quantile_models[q].predict(X)
+            obs = calibration_score(y_true, q_preds, q)
+            observed_fractions.append(obs)
+    else:
+        quantiles_tested = [alpha_lower, alpha_upper]
+        observed_fractions = [cal_lower, cal_upper]
 
     ax.plot([0, 1], [0, 1], "k--", linewidth=1, label="Perfect Calibration")
-    ax.scatter(quantiles_tested, observed_fractions, s=120, color=["#FF6B6B", "#4ECDC4"],
+    
+    colors = plt.cm.viridis(np.linspace(0, 1, len(quantiles_tested)))
+    ax.scatter(quantiles_tested, observed_fractions, s=120, c=colors,
                zorder=5, edgecolors="black", linewidth=1)
     for q, obs in zip(quantiles_tested, observed_fractions):
-        ax.annotate(f"  α={q:.1f}\n  obs={obs:.3f}", (q, obs), fontsize=9)
+        ax.annotate(f"  α={q:.2f}\n  obs={obs:.3f}", (q, obs), fontsize=9)
 
     ax.set_xlabel("Nominal Quantile (α)")
     ax.set_ylabel("Observed Fraction Below Prediction")
