@@ -311,10 +311,14 @@ def fetch_inertia_data_halfhourly(start_date: str, end_date: str) -> pl.DataFram
             rename_map[col] = 'timestamp_date'
         elif 'period' in col_lower and 'settlement' in col_lower:
             rename_map[col] = 'settlement_period'
-        elif 'inertia' in col_lower and 'mw' in col_lower:
+        elif 'outturn' in col_lower and 'inertia' in col_lower:
             rename_map[col] = 'system_inertia_mws'
-        elif 'inertia' in col_lower:
-            rename_map[col] = 'system_inertia_mws'
+            
+    # Fallback if 'outturn inertia' is not found
+    if 'system_inertia_mws' not in rename_map.values():
+        for col in df.columns:
+            if 'inertia' in col.lower() and 'system_inertia_mws' not in rename_map.values():
+                rename_map[col] = 'system_inertia_mws'
     
     if rename_map:
         df = df.rename(rename_map)

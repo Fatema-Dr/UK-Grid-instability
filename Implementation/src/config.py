@@ -56,29 +56,25 @@ LAG_INTERVALS_SECONDS = [1, 5, 60]
 # List of features to be used for the LightGBM model
 LGBM_FEATURE_COLS = [
     "grid_frequency", 
-    "rocof", 
-    "volatility_10s",
-    "volatility_30s",
-    "volatility_60s",
-    "wind_speed",
-    "wind_ramp_rate",
+    "rocof_1s", "rocof_5s", "rocof_10s", "rocof_30s", "rocof_accel", "rocof_smooth", "rocof",
+    "volatility_10s", "volatility_30s", "volatility_60s",
+    "wind_speed", "wind_power_proxy", "demand_proxy", "wind_ramp_rate",
     "solar_radiation", 
     "hour",
-    "renewable_penetration_ratio"
+    "renewable_penetration_ratio",
+    "inertia_value", "inertia_roc", "low_inertia_flag", "rocof_inertia_risk"
 ] + [f"lag_{lag}s" for lag in LAG_INTERVALS_SECONDS]
 
 # List of features for the LSTM model
 LSTM_FEATURE_COLS = [
     "grid_frequency", 
-    "rocof", 
-    "volatility_10s",
-    "volatility_30s",
-    "volatility_60s",
-    "wind_speed",
-    "wind_ramp_rate",
+    "rocof_1s", "rocof_5s", "rocof_10s", "rocof_30s", "rocof_accel", "rocof_smooth", "rocof",
+    "volatility_10s", "volatility_30s", "volatility_60s",
+    "wind_speed", "wind_power_proxy", "demand_proxy", "wind_ramp_rate",
     "solar_radiation",
     "hour",
-    "renewable_penetration_ratio"
+    "renewable_penetration_ratio",
+    "inertia_value", "inertia_roc", "low_inertia_flag", "rocof_inertia_risk"
 ] + [f"lag_{lag}s" for lag in LAG_INTERVALS_SECONDS]
 
 # Target column for classification
@@ -90,7 +86,7 @@ TARGET_FREQ_NEXT = "target_freq_next"
 # 3. MODEL TRAINING
 # -----------------------------------------------------------------------------
 # Quantiles for the uncertainty bands
-QUANTILE_ALPHAS = [0.1, 0.9]
+QUANTILE_ALPHAS = [0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95]
 
 # Date to split the training and testing data
 SPLIT_DATE = "2019-08-09 00:00:00"
@@ -120,7 +116,7 @@ WEATHER_API_LONGITUDE = -2.0
 WEATHER_API_TIMEZONE = "Europe/London"
 WEATHER_API_HOURLY_VARS = ["temperature_2m", "precipitation", "rain", "snowfall", "wind_speed_10m", "wind_gusts_10m", "direct_radiation"]
 WEATHER_API_DEFAULT_START_DATE = "2019-08-01"
-WEATHER_API_DEFAULT_END_DATE = "2019-08-31"
+WEATHER_API_DEFAULT_END_DATE = "2019-08-10"
 
 # 5. CALIBRATION & VALIDATION
 # -----------------------------------------------------------------------------

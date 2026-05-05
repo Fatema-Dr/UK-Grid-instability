@@ -17,6 +17,7 @@ def main():
 
     # Import all necessary modules after installing dependencies
     from src.config import (
+        EXPORT_DIR,
         LGBM_MODEL_PATH, LSTM_MODEL_PATH, SCALER_PATH, DEMO_DATA_PATH,
         LGBM_QUANTILE_LOWER_PATH, LGBM_QUANTILE_UPPER_PATH, QUANTILE_ALPHAS,
         WEATHER_API_DEFAULT_START_DATE, WEATHER_API_DEFAULT_END_DATE,
@@ -24,9 +25,9 @@ def main():
         CALIBRATION_START_DATE, CALIBRATION_END_DATE,
         LOWER_CALIBRATOR_PATH, UPPER_CALIBRATOR_PATH
     )
-    from src.data_loader import fetch_frequency_data, fetch_weather_data, fetch_inertia_data
+    from src.data_loader import fetch_frequency_data, fetch_weather_data, fetch_inertia_data_halfhourly
     from src.feature_engineering import merge_datasets, create_features
-    from src.model_trainer import train_and_evaluate_lgbm_classifier, train_quantile_model, train_lstm_model
+    from src.model_trainer import train_and_evaluate_lgbm_classifier, train_quantile_model, train_all_quantile_models, train_lstm_model, train_lstm_quantile_comparator
     from src.calibration import fit_calibrator, save_calibrator
     import joblib
     import os
@@ -37,7 +38,7 @@ def main():
     print("\n--- Starting Data Loading ---")
     df_freq = fetch_frequency_data(WEATHER_API_DEFAULT_START_DATE, WEATHER_API_DEFAULT_END_DATE)
     df_weather = fetch_weather_data(WEATHER_API_DEFAULT_START_DATE, WEATHER_API_DEFAULT_END_DATE)
-    df_inertia = fetch_inertia_data(WEATHER_API_DEFAULT_START_DATE, WEATHER_API_DEFAULT_END_DATE)
+    df_inertia = fetch_inertia_data_halfhourly(WEATHER_API_DEFAULT_START_DATE, WEATHER_API_DEFAULT_END_DATE)
 
     # 2. Feature Engineering
     print("\n--- Starting Feature Engineering ---")
@@ -52,13 +53,24 @@ def main():
     lgbm_classifier, _, _ = train_and_evaluate_lgbm_classifier(df_processed_pl)
 
     # 4. Model Training: LightGBM Quantile Regressors
-    print("\n--- Starting LightGBM Quantile Regressor Training ---")
-    lower_model, _, _ = train_quantile_model(df_processed_pl, alpha=QUANTILE_ALPHAS[0])
-    upper_model, _, _ = train_quantile_model(df_processed_pl, alpha=QUANTILE_ALPHAS[1])
+    print("\n--- Starting LightGBM Quantile Regressor Training (All Alphas) ---")
+    quantile_models, quantile_results, reliability_diagram = train_all_quantile_models(df_processed_pl)
+    # Use 0.10 and 0.90 for lower/upper bands
+    lower_model = quantile_models[0.10]
+    upper_model = quantile_models[0.90]
+    
+    print("\nReliability Diagram:")
+    for alpha, rel in reliability_diagram.items():
+        print(f"Alpha {alpha:.2f}: Expected {rel['expected']:.2f}, Observed {rel['observed']:.4f}, Deviation {rel['deviation_pp']:.2f}%")
 
     # 5. Model Training: LSTM
     print("\n--- Starting LSTM Training ---")
     lstm_model, scaler = train_lstm_model(df_processed_pl)
+    
+    print("\n--- Starting LSTM Quantile Comparator Training ---")
+    lstm_quant_model, lstm_scaler, X_test_lstm, y_test_lstm = train_lstm_quantile_comparator(df_processed_pl)
+    # Save the LSTM quantile model
+    lstm_quant_model.save(f"{EXPORT_DIR}/lstm_quantile_comparator.keras")
 
     # 5b. Post-Hoc Quantile Recalibration
     print("\n--- Fitting Quantile Calibrators (Isotonic Regression) ---")
@@ -75,8 +87,8 @@ def main():
     lower_cal_preds = lower_model.predict(X_cal)
     upper_cal_preds = upper_model.predict(X_cal)
     
-    lower_calibrator = fit_calibrator(y_cal, lower_cal_preds, alpha=QUANTILE_ALPHAS[0])
-    upper_calibrator = fit_calibrator(y_cal, upper_cal_preds, alpha=QUANTILE_ALPHAS[1])
+    lower_calibrator = fit_calibrator(y_cal, lower_cal_preds, alpha=0.10)
+    upper_calibrator = fit_calibrator(y_cal, upper_cal_preds, alpha=0.90)
 
     # 6. Save Demo Data
     print("\n--- Saving Demo Data for Dashboard ---")
@@ -106,7 +118,7 @@ def main():
     try:
         df_freq_w = fetch_frequency_data(WINTER_VALIDATION_START_DATE, WINTER_VALIDATION_END_DATE)
         df_weather_w = fetch_weather_data(WINTER_VALIDATION_START_DATE, WINTER_VALIDATION_END_DATE)
-        df_inertia_w = fetch_inertia_data(WINTER_VALIDATION_START_DATE, WINTER_VALIDATION_END_DATE)
+        df_inertia_w = fetch_inertia_data_halfhourly(WINTER_VALIDATION_START_DATE, WINTER_VALIDATION_END_DATE)
 
         if df_freq_w.is_empty() or df_weather_w.is_empty() or df_inertia_w.is_empty():
             print("⚠️  Winter data unavailable — skipping validation.")

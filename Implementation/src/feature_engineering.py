@@ -16,7 +16,7 @@ def merge_datasets(df_freq, df_weather, df_inertia):
     logger.info("Merging datasets...")
     df_freq = df_freq.sort("timestamp")
     df_weather = df_weather.sort("timestamp")
-    df_inertia = df_inertia.sort("timestamp_date")
+    df_inertia = df_inertia.sort("timestamp" if "timestamp" in df_inertia.columns else "timestamp_date")
 
     # Ensure timezone-aware columns can be joined
     df_weather = df_weather.with_columns(
@@ -31,9 +31,11 @@ def merge_datasets(df_freq, df_weather, df_inertia):
     )
     
     # Next, merge the result with inertia data
-    # The inertia data has a 'timestamp_date' column
+    if "timestamp_date" in df_inertia.columns:
+        df_inertia = df_inertia.rename({"timestamp_date": "timestamp"})
+        
     df_merged = df_merged.join_asof(
-        df_inertia.rename({"timestamp_date": "timestamp"}),
+        df_inertia,
         on="timestamp",
         strategy="backward"
     )
@@ -92,13 +94,40 @@ def create_features(df):
     # Initialize df_features with the current df
     df_features = df.copy()
 
-    # Smooth the RoCoF with a 5-second rolling average
-    df_features["rocof"] = df_features["grid_frequency"].diff().rolling(window=5, min_periods=1).mean().fillna(0)
+    # Fix 1: Causal (backward-only) RoCoF at multiple windows - no future leakage
+    df_features["rocof_1s"]  = df_features["grid_frequency"].diff(1).fillna(0)
+    df_features["rocof_5s"]  = ((df_features["grid_frequency"] - df_features["grid_frequency"].shift(5)) / 5.0).fillna(0)
+    df_features["rocof_10s"] = ((df_features["grid_frequency"] - df_features["grid_frequency"].shift(10)) / 10.0).fillna(0)
+    df_features["rocof_30s"] = ((df_features["grid_frequency"] - df_features["grid_frequency"].shift(30)) / 30.0).fillna(0)
+
+    # RoCoF acceleration (second derivative) - detects worsening vs. recovering
+    df_features["rocof_accel"] = df_features["rocof_5s"].diff(5).fillna(0)
+
+    # Smooth only rocof_1s for noise (backward window only - causal)
+    df_features["rocof_smooth"] = df_features["rocof_1s"].rolling(window=5, min_periods=1).mean().fillna(0)
     
-    # Calculate synthetic Renewable Penetration Ratio as a proxy for physical grid inertia
-    # Assuming average daily demand of 35000 MW, and scaling wind_speed by a hypothetical capacity
-    # e.g., renewable_penetration_ratio = (wind_speed * 3000 MW wind capacity) / 35000 MW demand
-    df_features["renewable_penetration_ratio"] = (df_features["wind_speed"] * 3000) / 35000
+    # Keep "rocof" column as "rocof_smooth" for backward compatibility with config LGBM_FEATURE_COLS
+    df_features["rocof"] = df_features["rocof_smooth"]
+
+    # Fix 7: Wind power approximation (cubic law) and diurnal demand
+    df_features["wind_power_proxy"] = np.clip(df_features["wind_speed"]**3 * 3.0, 0, 3000)
+    demand_profile = {0:28000, 6:30000, 9:34000, 12:35000, 16:38000, 19:37000, 22:32000}
+    def get_demand(h):
+        return demand_profile[min(demand_profile.keys(), key=lambda k: abs(k-h))]
+    df_features["demand_proxy"] = df_features["timestamp"].dt.hour.map(get_demand)
+    df_features["renewable_penetration_ratio"] = df_features["wind_power_proxy"] / (df_features["demand_proxy"] / 35000)
+
+    # Fix 2: Inertia rate-of-change and low-inertia flag
+    if "system_inertia_mws" in df_features.columns:
+        df_features["inertia_value"] = df_features["system_inertia_mws"] / 1000.0  # Convert MWs to GVAs
+    elif "inertia_cost" in df_features.columns:
+        df_features["inertia_value"] = df_features["inertia_cost"] / 1000.0
+    else:
+        df_features["inertia_value"] = 100.0
+        
+    df_features["inertia_roc"] = df_features["inertia_value"].diff(1800).fillna(0)  # change per 30min
+    df_features["low_inertia_flag"] = (df_features["inertia_value"] < 96).astype(np.int8)
+    df_features["rocof_inertia_risk"] = df_features["rocof_smooth"].abs() * df_features["renewable_penetration_ratio"]
 
     df_features["volatility_10s"] = df_features["grid_frequency"].rolling(window=10).std().fillna(0)
     df_features["volatility_30s"] = df_features["grid_frequency"].rolling(window=30).std().fillna(0)

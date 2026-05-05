@@ -129,13 +129,32 @@ def train_quantile_model(df, alpha):
     print(f"Finished training for alpha={alpha}.")
     return model, X_test, y_test # Return test data for combined metrics
 
+def train_all_quantile_models(df):
+    """Trains all configured quantile models in one sweep and builds a proper reliability diagram."""
+    models = {}
+    results = {}
+    for alpha in QUANTILE_ALPHAS:
+        model, X_test, y_test = train_quantile_model(df, alpha)
+        models[alpha] = model
+        results[alpha] = {
+            "y_pred": model.predict(X_test),
+            "y_test": y_test,
+            "pinball": pinball_loss(y_test, model.predict(X_test), alpha)
+        }
+    
+    # Build proper reliability diagram
+    reliability = {}
+    for alpha in QUANTILE_ALPHAS:
+        observed_coverage = np.mean(results[alpha]["y_test"] <= results[alpha]["y_pred"])
+        reliability[alpha] = {
+            "expected": alpha,
+            "observed": observed_coverage,
+            "deviation_pp": (observed_coverage - alpha) * 100
+        }
+    return models, results, reliability
 
-def create_lstm_sequences(X, y, time_steps):
-    Xs, ys = [], []
-    for i in range(len(X) - time_steps):
-        Xs.append(X[i:(i + time_steps)])
-        ys.append(y.iloc[i + time_steps])
-    return np.array(Xs), np.array(ys)
+
+
 
 def train_lstm_model(df_processed):
     """
@@ -158,15 +177,42 @@ def train_lstm_model(df_processed):
     train_scaled = scaler.fit_transform(train_data[LSTM_FEATURE_COLS])
     test_scaled = scaler.transform(test_data[LSTM_FEATURE_COLS])
 
-    print("Creating sequences (this may take a moment)...")
-    X_train, y_train = create_lstm_sequences(train_scaled, train_data[TARGET_COL], time_steps=LSTM_TIME_STEPS)
-    X_test, y_test = create_lstm_sequences(test_scaled, test_data[TARGET_COL], time_steps=LSTM_TIME_STEPS)
+    print("Creating sequence datasets...")
+    train_size = int(len(train_scaled) * (1 - LSTM_VALIDATION_SPLIT))
+    
+    val_scaled = train_scaled[train_size:]
+    val_y = train_data[TARGET_COL].values[train_size:]
+    
+    train_scaled_split = train_scaled[:train_size]
+    train_y = train_data[TARGET_COL].values[:train_size]
 
-    print(f"LSTM Input Shape: {X_train.shape}")
+    train_ds = tf.keras.utils.timeseries_dataset_from_array(
+        data=train_scaled_split,
+        targets=train_y[LSTM_TIME_STEPS:],
+        sequence_length=LSTM_TIME_STEPS,
+        batch_size=LSTM_BATCH_SIZE,
+        shuffle=True
+    )
+    val_ds = tf.keras.utils.timeseries_dataset_from_array(
+        data=val_scaled,
+        targets=val_y[LSTM_TIME_STEPS:],
+        sequence_length=LSTM_TIME_STEPS,
+        batch_size=LSTM_BATCH_SIZE,
+        shuffle=False
+    )
+    test_ds = tf.keras.utils.timeseries_dataset_from_array(
+        data=test_scaled,
+        targets=test_data[TARGET_COL].values[LSTM_TIME_STEPS:],
+        sequence_length=LSTM_TIME_STEPS,
+        batch_size=LSTM_BATCH_SIZE,
+        shuffle=False
+    )
+
+    print(f"LSTM Input Shape: ({LSTM_TIME_STEPS}, {train_scaled.shape[1]})")
 
     print("Building LSTM Model...")
     model = tf.keras.models.Sequential([
-        tf.keras.layers.LSTM(50, return_sequences=False, input_shape=(X_train.shape[1], X_train.shape[2])),
+        tf.keras.layers.LSTM(50, return_sequences=False, input_shape=(LSTM_TIME_STEPS, train_scaled.shape[1])),
         tf.keras.layers.Dropout(0.2),
         tf.keras.layers.Dense(1, activation='sigmoid')
     ])
@@ -181,17 +227,86 @@ def train_lstm_model(df_processed):
 
     print("Training LSTM...")
     history = model.fit(
-        X_train, y_train,
+        train_ds,
         epochs=LSTM_EPOCHS,
-        batch_size=LSTM_BATCH_SIZE,
-        validation_split=LSTM_VALIDATION_SPLIT,
+        validation_data=val_ds,
         verbose=1,
         callbacks=[early_stopping] # Add early stopping callback
     )
 
     print("\nEvaluating LSTM on August 9...")
-    y_pred_prob = model.predict(X_test)
+    y_pred_prob = model.predict(test_ds)
     y_pred = (y_pred_prob > 0.5).astype(int)
-    print(classification_report(y_test, y_pred, target_names=["Stable", "Unstable"]))
+    y_test_actual = test_data[TARGET_COL].values[LSTM_TIME_STEPS:]
+    print(classification_report(y_test_actual, y_pred, target_names=["Stable", "Unstable"]))
 
     return model, scaler
+
+def train_lstm_quantile_comparator(df_processed, n_mc_samples=100):
+    """
+    LSTM with MC Dropout for probabilistic forecasting - valid comparison to LightGBM quantile.
+    """
+    print("Preparing data for LSTM Quantile Comparator (MC Dropout)...")
+    data = df_processed.select(LSTM_FEATURE_COLS + [TARGET_FREQ_NEXT, "timestamp"]).to_pandas()
+
+    split_dt = datetime.strptime(SPLIT_DATE, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    end_dt = datetime.strptime(END_TEST_DATE, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    data['timestamp'] = pd.to_datetime(data['timestamp'], utc=True)
+    
+    data = data.dropna(subset=[TARGET_FREQ_NEXT])
+
+    train_data = data[data['timestamp'] < split_dt].drop(columns=['timestamp'])
+    test_data = data[(data['timestamp'] >= split_dt) & (data['timestamp'] < end_dt)].drop(columns=['timestamp'])
+
+    print(f"Train samples: {len(train_data)}, Test samples: {len(test_data)}")
+
+    scaler = MinMaxScaler()
+    train_scaled = scaler.fit_transform(train_data[LSTM_FEATURE_COLS])
+    test_scaled = scaler.transform(test_data[LSTM_FEATURE_COLS])
+
+    print("Creating sequence datasets...")
+    train_size = int(len(train_scaled) * (1 - LSTM_VALIDATION_SPLIT))
+    
+    val_scaled = train_scaled[train_size:]
+    val_y = train_data[TARGET_FREQ_NEXT].values[train_size:]
+    
+    train_scaled_split = train_scaled[:train_size]
+    train_y = train_data[TARGET_FREQ_NEXT].values[:train_size]
+
+    train_ds = tf.keras.utils.timeseries_dataset_from_array(
+        data=train_scaled_split,
+        targets=train_y[LSTM_TIME_STEPS:],
+        sequence_length=LSTM_TIME_STEPS,
+        batch_size=LSTM_BATCH_SIZE,
+        shuffle=True
+    )
+    val_ds = tf.keras.utils.timeseries_dataset_from_array(
+        data=val_scaled,
+        targets=val_y[LSTM_TIME_STEPS:],
+        sequence_length=LSTM_TIME_STEPS,
+        batch_size=LSTM_BATCH_SIZE,
+        shuffle=False
+    )
+
+    print("Building LSTM MC Dropout Model...")
+    inputs = tf.keras.Input(shape=(LSTM_TIME_STEPS, train_scaled.shape[1]))
+    x = tf.keras.layers.LSTM(50, return_sequences=False)(inputs)
+    # Dropout kept ON during inference (training=True) for MC Dropout
+    x = tf.keras.layers.Dropout(0.2)(x, training=True)
+    outputs = tf.keras.layers.Dense(1)(x)  # regression, not classification
+    
+    model = tf.keras.Model(inputs, outputs)
+    model.compile(optimizer='adam', loss='mae')
+
+    early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
+
+    print("Training LSTM MC Dropout Quantile Comparator...")
+    model.fit(
+        train_ds,
+        epochs=LSTM_EPOCHS,
+        validation_data=val_ds,
+        verbose=1,
+        callbacks=[early_stopping]
+    )
+    
+    return model, scaler, None, None
