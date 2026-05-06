@@ -365,14 +365,9 @@ document.addEventListener('keydown', function(e) {{
 )
 
 
-@st.cache_data(show_spinner="Loading models and data…")
-def load_all(start_str, end_str):
-    src_hash = get_src_hash()
-    clear_invalid_cache(src_hash)
-    cache_file = (
-        CACHE_DIR / f"processed_data_{start_str}_to_{end_str}_{src_hash}.parquet"
-    )
-
+@st.cache_resource
+def load_models(model_stamp: tuple):
+    """Load model objects. Re-runs ONLY if model files on disk change."""
     required = [
         LGBM_QUANTILE_LOWER_PATH,
         LGBM_QUANTILE_UPPER_PATH,
@@ -391,8 +386,38 @@ def load_all(start_str, end_str):
     lstm_m = tf.keras.models.load_model(LSTM_MODEL_PATH)
     sc = joblib.load(SCALER_PATH)
 
+    lo_cal = hi_cal = None
+    if os.path.exists(LOWER_CALIBRATOR_PATH) and os.path.exists(UPPER_CALIBRATOR_PATH):
+        lo_cal = joblib.load(LOWER_CALIBRATOR_PATH)
+        hi_cal = joblib.load(UPPER_CALIBRATOR_PATH)
+
+    return lo_m, up_m, cls_m, lstm_m, sc, lo_cal, hi_cal
+
+
+@st.cache_data(show_spinner="Loading and processing data…")
+def load_processed_data(start_str, end_str, src_hash):
+    """Fetch and process data. Re-runs if dates or src/ code changes."""
+    clear_invalid_cache(src_hash)
+    cache_file = (
+        CACHE_DIR / f"processed_data_{start_str}_to_{end_str}_{src_hash}.parquet"
+    )
+
     if cache_file.exists():
         df = pd.read_parquet(cache_file)
+        # FIX 2 — Parquet cache validation
+        required_cols = [
+            "rocof_5s",
+            "rocof_accel",
+            "rocof_smooth",
+            "volatility_10s",
+            "renewable_penetration_ratio",
+        ]
+        if not all(c in df.columns for c in required_cols):
+            try:
+                cache_file.unlink()
+            except Exception:
+                pass
+            return load_processed_data(start_str, end_str, src_hash)
     else:
         df_f = fetch_frequency_data(start_str, end_str)
         df_w = fetch_weather_data(start_str, end_str)
@@ -423,13 +448,7 @@ def load_all(start_str, end_str):
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         df.to_parquet(cache_file)
 
-    explainer = shap.TreeExplainer(lo_m)
-    lo_cal = hi_cal = None
-    if os.path.exists(LOWER_CALIBRATOR_PATH) and os.path.exists(UPPER_CALIBRATOR_PATH):
-        lo_cal = joblib.load(LOWER_CALIBRATOR_PATH)
-        hi_cal = joblib.load(UPPER_CALIBRATOR_PATH)
-
-    return lo_m, up_m, cls_m, lstm_m, sc, df, explainer, lo_cal, hi_cal
+    return df
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -445,9 +464,21 @@ with st.sidebar.container(border=True):
     with c2:
         sel_end = st.date_input("End", value=default_e)
 
-lo_m, up_m, cls_m, lstm_m, scaler, df_data, explainer, lo_cal, hi_cal = load_all(
-    sel_start.strftime("%Y-%m-%d"), sel_end.strftime("%Y-%m-%d")
+model_stamp = tuple(
+    os.path.getmtime(p)
+    for p in [
+        LGBM_QUANTILE_LOWER_PATH,
+        LGBM_QUANTILE_UPPER_PATH,
+        LGBM_MODEL_PATH,
+        LSTM_MODEL_PATH,
+        SCALER_PATH,
+    ]
 )
+lo_m, up_m, cls_m, lstm_m, scaler, lo_cal, hi_cal = load_models(model_stamp)
+df_data = load_processed_data(
+    sel_start.strftime("%Y-%m-%d"), sel_end.strftime("%Y-%m-%d"), get_src_hash()
+)
+explainer = shap.TreeExplainer(lo_m)
 if df_data.empty:
     st.error("🚨 No data.")
     st.stop()
@@ -698,10 +729,9 @@ rocof = current_row["rocof"]
 # LSTM Probability (needed for fusion)
 w_start = max(0, time_index - LSTM_TIME_STEPS + 1)
 lstm_df = df_data.iloc[w_start : time_index + 1]
-lstm_alert = False
-lstm_prob = 0.0
-if len(lstm_df) == LSTM_TIME_STEPS:
-    lstm_sc = scaler.transform(lstm_df[LSTM_FEATURE_COLS])
+if len(lstm_df) >= LSTM_TIME_STEPS:
+    lstm_input = lstm_df[LSTM_FEATURE_COLS].values[-LSTM_TIME_STEPS:]
+    lstm_sc = scaler.transform(lstm_input)
     lstm_prob = float(lstm_m.predict(np.array([lstm_sc]), verbose=0)[0][0])
     lstm_alert = lstm_prob > 0.5
 
@@ -719,9 +749,11 @@ classifier_prob = float(cls_m.predict_proba(X_in_cls)[0][1])
 
 # Physical signals
 rocof_alert = (rocof_now < -0.015) and (freq_now < 50.05)
-accel_alert = (rocof_accel < -0.005)
+if rocof_accel == 0.0 and rocof_5s != 0.0:
+    rocof_accel = rocof_now - rocof_5s
+accel_alert = (rocof_accel < -0.002)
 volatility_alert = (volatility > 0.02) and (freq_now < 50.1)
-renewable_stress = (ren_pen > 0.15) and (rocof_now < -0.01)
+renewable_stress = (ren_pen > 0.05) and (rocof_now < -0.008)
 freq_boundary = freq_now < 49.95
 
 # Score-based fusion
@@ -737,6 +769,20 @@ signal_count = sum([
 
 emergency_trigger = signal_count >= 3 or freq_now < alert_hz
 warning_trigger   = signal_count >= 2 or (classifier_prob > 0.25) or (lstm_prob > 0.25)
+
+with st.sidebar.expander("🔍 Signal Debug"):
+    st.write(f"rocof_now: {rocof_now:.5f}")
+    st.write(f"rocof_accel: {rocof_accel:.5f}")
+    st.write(f"volatility_10s: {volatility:.5f}")
+    st.write(f"ren_pen: {ren_pen:.4f}")
+    st.write(f"rocof_alert: {rocof_alert}")
+    st.write(f"accel_alert: {accel_alert}")
+    st.write(f"volatility_alert: {volatility_alert}")
+    st.write(f"renewable_stress: {renewable_stress}")
+    st.write(f"signal_count: {signal_count}/7")
+    st.write(f"classifier_prob: {classifier_prob:.4f}")
+    st.write(f"lstm_prob: {lstm_prob:.4f}")
+    st.write(f"emergency_trigger: {emergency_trigger}")
 
 # Backwards compatibility for downstream components
 is_alert = emergency_trigger
@@ -767,7 +813,7 @@ trust = 100.0
 model_conflict = is_alert != lstm_alert
 
 if model_conflict:
-    trust = 0.0
+    trust -= 30.0
 else:
     if current_row.get("volatility_10s", 0) > 0.015:
         trust -= min(20.0, current_row.get("volatility_10s", 0) * 200)
@@ -894,6 +940,14 @@ st.markdown(
 tabs = st.tabs(["🎛️ Command Deck", "📊 Model Health"])
 
 with tabs[0]:
+    if status_class:
+        st.markdown(
+            f'<div class="alert-banner {status_class}">'
+            f"{status_icon} &nbsp; {status} &nbsp; {status_icon}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+    inject_css(pulse=is_breach)
     # ══════════════════════════════════════════════════════════════════════
     # ROW 1 — KPI Cards
     # ══════════════════════════════════════════════════════════════════════
