@@ -242,7 +242,7 @@ def train_lstm_model(df_processed):
 
     return model, scaler
 
-def train_lstm_quantile_comparator(df_processed, n_mc_samples=100):
+def train_lstm_quantile_comparator(df_processed, n_mc_samples=25):
     """
     LSTM with MC Dropout for probabilistic forecasting - valid comparison to LightGBM quantile.
     """
@@ -309,4 +309,38 @@ def train_lstm_quantile_comparator(df_processed, n_mc_samples=100):
         callbacks=[early_stopping]
     )
     
-    return model, scaler, None, None
+    # Build test dataset for MC Dropout evaluation
+    test_ds = tf.keras.utils.timeseries_dataset_from_array(
+        data=test_scaled,
+        targets=test_data[TARGET_FREQ_NEXT].values[LSTM_TIME_STEPS:],
+        sequence_length=LSTM_TIME_STEPS,
+        batch_size=LSTM_BATCH_SIZE,
+        shuffle=False
+    )
+
+    # Run MC Dropout: sample n_mc_samples stochastic forward passes
+    # training=True keeps Dropout active at inference time (MC Dropout)
+    mc_preds = []
+    print(f"  Generating {n_mc_samples} MC Dropout samples for each batch...")
+    for i, batch in enumerate(test_ds):
+        if i % 200 == 0:
+            print(f"    Processing batch {i}...")
+        # Optimized: Tile the batch to run all n_mc_samples in a single vectorized forward pass
+        batch_size = tf.shape(batch[0])[0]
+        tiled_inputs = tf.repeat(batch[0], n_mc_samples, axis=0)
+        
+        # Single forward pass for all stochastic samples (training=True keeps dropout active)
+        tiled_preds = model(tiled_inputs, training=True)
+        
+        # Reshape to (batch_size, n_mc_samples, 1) and take mean across samples
+        batch_samples = tf.reshape(tiled_preds, (batch_size, n_mc_samples, 1))
+        batch_mean = tf.reduce_mean(batch_samples, axis=1)
+        mc_preds.append(batch_mean.numpy())
+
+    # Concatenate batches together (handles the smaller last batch correctly)
+    X_test_lstm = np.concatenate(mc_preds, axis=0)
+    
+    # Collect ground truth
+    y_test_lstm = np.concatenate([batch[1].numpy() for batch in test_ds])
+
+    return model, scaler, X_test_lstm, y_test_lstm

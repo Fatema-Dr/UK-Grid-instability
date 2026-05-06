@@ -115,7 +115,9 @@ def create_features(df):
     def get_demand(h):
         return demand_profile[min(demand_profile.keys(), key=lambda k: abs(k-h))]
     df_features["demand_proxy"] = df_features["timestamp"].dt.hour.map(get_demand)
-    df_features["renewable_penetration_ratio"] = df_features["wind_power_proxy"] / (df_features["demand_proxy"] / 35000)
+    df_features["renewable_penetration_ratio"] = (
+        df_features["wind_power_proxy"] / df_features["demand_proxy"].replace(0, 35000)
+    ).clip(0, 1)
 
     # Fix 2: Inertia rate-of-change and low-inertia flag
     if "system_inertia_mws" in df_features.columns:
