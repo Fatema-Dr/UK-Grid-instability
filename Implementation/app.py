@@ -386,26 +386,51 @@ else: # Only proceed if df_data is not empty
         lstm_input_scaled = scaler.transform(lstm_input_df[LSTM_FEATURE_COLS])
         lstm_input_seq = np.array([lstm_input_scaled])
         lstm_prob = lstm_model.predict(lstm_input_seq, verbose=0)[0][0]
-        lstm_alert = lstm_prob > 0.5
 
     # (uses classifier as primary signal):
     input_lgbm_cls = pd.DataFrame([current_row[LGBM_FEATURE_COLS].values], columns=LGBM_FEATURE_COLS)
     classifier_prob = classifier_model.predict_proba(input_lgbm_cls)[0][1]
-    is_alert = (
-        lower_bound_pred < alert_threshold_hz
-        or current_row['grid_frequency'] < alert_threshold_hz
-        or classifier_prob > 0.5   # ← classifier says unstable
-)
+    
+    # --- Robust Proactive Alert Logic ---
+    freq_now = current_row['grid_frequency']
+    
+    # 1. Emergency (Red): Imminent Blackout Risk
+    # Trigger if breach is predicted OR if high-probability instability is detected while freq < 50.1
+    emergency_trigger = (
+        lower_bound_pred < alert_threshold_hz 
+        or freq_now < alert_threshold_hz
+        or (lstm_prob > 0.4 and freq_now < 50.1)
+        or (classifier_prob > 0.4 and freq_now < 50.1)
+    )
+    
+    # 2. Warning (Yellow): General Instability / High Frequency
+    warning_trigger = (
+        freq_now > 50.15
+        or (classifier_prob > 0.25)
+        or (lstm_prob > 0.25)
+    )
 
+    # --- Alert Persistence Logic ---
+    if "last_alert_time" not in st.session_state:
+        st.session_state.last_alert_time = None
+    
+    if emergency_trigger:
+        st.session_state.last_alert_time = current_time
+    
+    persistent_alert = False
+    if st.session_state.last_alert_time is not None:
+        time_since_alert = (current_time - st.session_state.last_alert_time).total_seconds()
+        if 0 <= time_since_alert <= 30:
+            persistent_alert = True
 
     # --- Sidebar UI components ---
     with st.sidebar.expander("🔍 Alert Debugging"):
         st.write(f"Threshold: {alert_threshold_hz} Hz")
-        st.write(f"Current Freq: {current_row['grid_frequency']:.4f} Hz")
+        st.write(f"Current Freq: {freq_now:.4f} Hz")
         st.write(f"LGBM Lower: {lower_bound_pred:.4f} Hz")
-        st.write(f"is_alert (LGBM): {'✅' if (lower_bound_pred < alert_threshold_hz or current_row['grid_frequency'] < alert_threshold_hz) else '❌'}")
+        st.write(f"Emergency Trigger: {'✅' if emergency_trigger else '❌'}")
+        st.write(f"Warning Trigger: {'✅' if warning_trigger else '❌'}")
         st.write(f"LSTM Prob: {lstm_prob:.4f}")
-        st.write(f"lstm_alert: {'✅' if lstm_prob > 0.5 else '❌'}")
         st.write(f"Classifier P(unstable): {classifier_prob:.4f}")
     
     if synthetic_inertia_mw > 0:
@@ -428,11 +453,11 @@ else: # Only proceed if df_data is not empty
         col2.metric("Predicted Lower Bound", f"{lower_bound_pred:.3f} Hz")
         col3.metric("Predicted Upper Bound", f"{upper_bound_pred:.3f} Hz")
     
-        if is_alert and lstm_alert:
+        if persistent_alert and emergency_trigger:
             col4.error(f"⚠️ INSTABILITY ALERT")
             col5.metric("Time to Alert", f"{tta_seconds_user} sec", "⚠️")
-        elif is_alert or lstm_alert:
-            col4.warning(f"⚠️ HIGH MODEL UNCERTAINTY")
+        elif persistent_alert:
+            col4.warning(f"⚠️ HIGH RISK / RECOVERY")
             col5.metric("Time to Alert", f"{tta_seconds_user} sec", "⚠️")
         else:
             col4.success(f"✅ SYSTEM STABLE")
@@ -469,14 +494,26 @@ else: # Only proceed if df_data is not empty
             fig.add_hline(y=alert_threshold_hz, line_dash="dash", line_color="red", annotation_text="Alert Threshold")
 
             if quantile_models is not None:
+                from src.calibration import calibrate_predictions
                 alphas = sorted(quantile_models.keys())
                 num_pairs = len(alphas) // 2
                 for i in range(num_pairs):
                     a_low = alphas[i]
                     a_high = alphas[-(i+1)]
-                    pred_low = quantile_models[a_low].predict(window_input)
-                    pred_high = quantile_models[a_high].predict(window_input)
+                    raw_low = quantile_models[a_low].predict(window_input)
+                    raw_high = quantile_models[a_high].predict(window_input)
                     
+                    # Apply calibration if we have matching calibrators (usually 0.1 and 0.9)
+                    if a_low == 0.10 and lower_calibrator:
+                        pred_low = calibrate_predictions(lower_calibrator, raw_low)
+                    else:
+                        pred_low = raw_low
+                        
+                    if a_high == 0.90 and upper_calibrator:
+                        pred_high = calibrate_predictions(upper_calibrator, raw_high)
+                    else:
+                        pred_high = raw_high
+
                     # Apply simple intervention logic delta
                     pred_low += swing_delta_f
                     pred_high += swing_delta_f
@@ -488,12 +525,19 @@ else: # Only proceed if df_data is not empty
                         fig.add_trace(go.Scatter(x=chart_data['timestamp'], y=pred_high, fill=None, mode='lines', line_color='rgba(255,255,255,0)', showlegend=False))
                         fig.add_trace(go.Scatter(x=chart_data['timestamp'], y=pred_low, fill='tonexty', mode='lines', line_color='rgba(255,255,255,0)', fillcolor=f'rgba(255, 165, 0, {opacity})', name=name))
                     else:
-                        name = f'{int((a_high - a_low)*100)}% CI'
-                        fig.add_trace(go.Scatter(x=chart_data['timestamp'], y=pred_high, fill=None, mode='lines', line_color='rgba(255,255,255,0)', showlegend=False))
+                        fig.add_trace(go.Scatter(x=chart_data['timestamp'], y=pred_high, fill=None, mode='lines', line_color='rgba(255,255,255,0)', showlegend=False, hoverinfo='skip'))
                         fig.add_trace(go.Scatter(x=chart_data['timestamp'], y=pred_low, fill='tonexty', mode='lines', line_color='rgba(255,255,255,0)', fillcolor=f'rgba(255, 165, 0, {opacity})', showlegend=False, hoverinfo='skip'))
             else:
-                lower_preds = lower_model.predict(window_input) + swing_delta_f
-                upper_preds = upper_model.predict(window_input) + swing_delta_f
+                from src.calibration import calibrate_predictions
+                raw_low = lower_model.predict(window_input)
+                raw_high = upper_model.predict(window_input)
+                
+                if lower_calibrator and upper_calibrator:
+                    lower_preds = calibrate_predictions(lower_calibrator, raw_low) + swing_delta_f
+                    upper_preds = calibrate_predictions(upper_calibrator, raw_high) + swing_delta_f
+                else:
+                    lower_preds = raw_low + swing_delta_f
+                    upper_preds = raw_high + swing_delta_f
 
                 # Uncertainty Band
                 fig.add_trace(go.Scatter(x=chart_data['timestamp'], y=upper_preds, fill=None, mode='lines', line_color='rgba(255,255,255,0)', showlegend=False))
@@ -558,15 +602,23 @@ else: # Only proceed if df_data is not empty
             "SHAP Value": shap_values_for_plot[0] # Access the first (and only) row for the single sample
         }).sort_values("SHAP Value", ascending=False)
 
-        # Positive SHAP values push prediction higher, negative push lower.
-        # For instability (low frequency), we are interested in what pushes the prediction DOWN.
-        contrib_df['Color'] = np.where(contrib_df["SHAP Value"] < 0, '#FF4B4B', '#00CCFF') # Red for negative drivers, blue for positive
-        
+        # Filter out dominant autoregressive features (grid_frequency and lags)
+        # to reveal the underlying physics drivers (inertia, wind, etc.)
+        mask = ~contrib_df["Factor"].str.contains("grid_frequency|lag_")
+        contrib_plot_df = contrib_df[mask].copy()
+
+        # Sort by absolute impact to show most important drivers first
+        contrib_plot_df["Abs Impact"] = contrib_plot_df["SHAP Value"].abs()
+        contrib_plot_df = contrib_plot_df.sort_values("Abs Impact", ascending=False).head(12)
+
+        # Color mapping: Red for negative drivers (pushing freq lower/higher risk), blue for positive
+        contrib_plot_df['Color'] = np.where(contrib_plot_df["SHAP Value"] < 0, '#FF4B4B', '#00CCFF')
+
         fig_bar = go.Figure(go.Bar(
-            x=contrib_df["SHAP Value"],
-            y=contrib_df["Factor"],
+            x=contrib_plot_df["SHAP Value"],
+            y=contrib_plot_df["Factor"],
             orientation='h',
-            marker_color=contrib_df['Color']
+            marker_color=contrib_plot_df['Color']
         ))
         
         fig_bar.update_layout(

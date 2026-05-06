@@ -136,9 +136,19 @@ def create_features(df):
     df_features["volatility_60s"] = df_features["grid_frequency"].rolling(window=60).std().fillna(0)
     df_features["hour"] = df_features["timestamp"].dt.hour
     df_features["minute"] = df_features["timestamp"].dt.minute
-    df_features["target_freq_next"] = df_features["grid_frequency"].shift(-TTA_SECONDS)
-    df_features[TARGET_COL] = ((df_features["grid_frequency"].shift(-TTA_SECONDS) > 50.2) |
-                               (df_features["grid_frequency"].shift(-TTA_SECONDS) < 49.8)).astype(np.int8)
+    # Widen the instability label window (Danger Window)
+    # Catch the approach to instability, not just the exact breach
+    freq_next   = df_features["grid_frequency"].shift(-TTA_SECONDS)
+    rocof_now   = df_features["rocof_smooth"]
+    volatility  = df_features["volatility_10s"]
+
+    df_features["target_freq_next"] = freq_next
+    df_features["target_is_unstable"] = (
+        (freq_next < 49.85)                          # freq heading low
+        | (freq_next > 50.15)                        # freq heading high  
+        | ((rocof_now < -0.02) & (freq_next < 49.95)) # fast negative RoCoF near boundary
+        | (volatility > 0.03)                        # high turbulence
+    ).astype(np.int8)
 
     # Dynamically generate lag features
     for lag in LAG_INTERVALS_SECONDS:
