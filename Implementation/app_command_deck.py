@@ -748,27 +748,30 @@ X_in_cls = pd.DataFrame([current_row[LGBM_FEATURE_COLS].values], columns=LGBM_FE
 classifier_prob = float(cls_m.predict_proba(X_in_cls)[0][1])
 
 # Physical signals
-rocof_alert = (rocof_now < -0.015) and (freq_now < 50.05)
+rocof_alert = (rocof_now < -0.012) and (freq_now < 50.05)
 if rocof_accel == 0.0 and rocof_5s != 0.0:
     rocof_accel = rocof_now - rocof_5s
-accel_alert = (rocof_accel < -0.002)
-volatility_alert = (volatility > 0.02) and (freq_now < 50.1)
-renewable_stress = (ren_pen > 0.05) and (rocof_now < -0.008)
+accel_alert = (rocof_accel < -0.005)
+volatility_alert = (volatility > 0.018) and (freq_now < 50.1)
+renewable_stress = (ren_pen > 0.04) and (rocof_now < -0.006)
 freq_boundary = freq_now < 49.95
 
 # Score-based fusion
+quantile_signal = lo_pred < (alert_hz + 0.05)   # 0.05 Hz buffer for early warning
+
 signal_count = sum([
     rocof_alert,
     accel_alert,
     volatility_alert,
     renewable_stress,
     freq_boundary,
-    classifier_prob > 0.35,
-    lstm_prob > 0.35,
+    classifier_prob > 0.30,
+    lstm_prob > 0.30,
+    quantile_signal,
 ])
 
-emergency_trigger = signal_count >= 3 or freq_now < alert_hz
-warning_trigger   = signal_count >= 2 or (classifier_prob > 0.25) or (lstm_prob > 0.25)
+emergency_trigger = signal_count >= 3 or freq_now < alert_hz or quantile_signal
+warning_trigger   = signal_count >= 2 or (classifier_prob > 0.20) or (lstm_prob > 0.20)
 
 with st.sidebar.expander("🔍 Signal Debug"):
     st.write(f"rocof_now: {rocof_now:.5f}")
@@ -779,7 +782,7 @@ with st.sidebar.expander("🔍 Signal Debug"):
     st.write(f"accel_alert: {accel_alert}")
     st.write(f"volatility_alert: {volatility_alert}")
     st.write(f"renewable_stress: {renewable_stress}")
-    st.write(f"signal_count: {signal_count}/7")
+    st.write(f"signal_count: {signal_count}/8")
     st.write(f"classifier_prob: {classifier_prob:.4f}")
     st.write(f"lstm_prob: {lstm_prob:.4f}")
     st.write(f"emergency_trigger: {emergency_trigger}")

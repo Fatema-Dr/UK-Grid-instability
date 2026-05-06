@@ -355,30 +355,33 @@ else: # Only proceed if df_data is not empty
     ren_pen     = current_row.get('renewable_penetration_ratio', 0.0)
 
     # Physics signal: sustained negative RoCoF + frequency deviation
-    rocof_alert = (rocof_now < -0.015) and (freq_now < 50.05)
+    rocof_alert = (rocof_now < -0.012) and (freq_now < 50.05)
     # Acceleration alert: RoCoF getting WORSE (second derivative negative)
     accel_alert = (rocof_accel < -0.005)
     # Volatility alert: high turbulence even at "normal" freq
-    volatility_alert = (volatility > 0.02) and (freq_now < 50.1)
+    volatility_alert = (volatility > 0.018) and (freq_now < 50.1)
     # Renewable stress: high penetration + any negative RoCoF
-    renewable_stress = (ren_pen > 0.15) and (rocof_now < -0.01)
+    renewable_stress = (ren_pen > 0.04) and (rocof_now < -0.006)
     # Frequency boundary proximity
     freq_boundary = freq_now < 49.95
 
     # Score-based fusion (count how many signals are firing)
+    quantile_signal = lower_bound_pred < (alert_threshold_hz + 0.05)
+    
     signal_count = sum([
         rocof_alert,
         accel_alert,
         volatility_alert,
         renewable_stress,
         freq_boundary,
-        classifier_prob > 0.35,
-        lstm_prob > 0.35,
+        classifier_prob > 0.30,
+        lstm_prob > 0.30,
+        quantile_signal,
     ])
 
     # Alert levels based on signal convergence
-    emergency_trigger = signal_count >= 3 or freq_now < alert_threshold_hz
-    warning_trigger   = signal_count >= 2 or (classifier_prob > 0.25) or (lstm_prob > 0.25)
+    emergency_trigger = signal_count >= 3 or freq_now < alert_threshold_hz or quantile_signal
+    warning_trigger   = signal_count >= 2 or (classifier_prob > 0.20) or (lstm_prob > 0.20)
 
     # --- Alert Persistence Logic ---
     if "last_alert_time" not in st.session_state:

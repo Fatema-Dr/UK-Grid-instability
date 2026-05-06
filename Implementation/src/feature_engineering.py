@@ -101,10 +101,10 @@ def create_features(df):
     df_features["rocof_30s"] = ((df_features["grid_frequency"] - df_features["grid_frequency"].shift(30)) / 30.0).fillna(0)
 
     # RoCoF acceleration (second derivative) - detects worsening vs. recovering
-    df_features["rocof_accel"] = df_features["rocof_5s"].diff(5).fillna(0)
+    df_features["rocof_accel"] = (df_features["rocof_5s"].diff(5) / 5.0).fillna(0)
 
-    # Smooth only rocof_1s for noise (backward window only - causal)
-    df_features["rocof_smooth"] = df_features["rocof_1s"].rolling(window=5, min_periods=1).mean().fillna(0)
+    # Smooth only rocof_1s for noise (EWM span=3 reacts faster than SMA)
+    df_features["rocof_smooth"] = df_features["rocof_1s"].ewm(span=3, min_periods=1, adjust=False).mean().fillna(0)
     
     # Keep "rocof" column as "rocof_smooth" for backward compatibility with config LGBM_FEATURE_COLS
     df_features["rocof"] = df_features["rocof_smooth"]
@@ -148,6 +148,8 @@ def create_features(df):
         | (freq_next > 50.15)                        # freq heading high  
         | ((rocof_now < -0.02) & (freq_next < 49.95)) # fast negative RoCoF near boundary
         | (volatility > 0.03)                        # high turbulence
+        | ((df_features["rocof_accel"] < -0.003) & (rocof_now < -0.008))                      # accelerating fall
+        | ((rocof_now < -0.01) & (df_features["renewable_penetration_ratio"] > 0.06))  # stressed grid
     ).astype(np.int8)
 
     # Dynamically generate lag features
