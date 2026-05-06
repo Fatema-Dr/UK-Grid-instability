@@ -346,24 +346,39 @@ else: # Only proceed if df_data is not empty
     input_lgbm_cls = pd.DataFrame([current_row[LGBM_FEATURE_COLS].values], columns=LGBM_FEATURE_COLS)
     classifier_prob = classifier_model.predict_proba(input_lgbm_cls)[0][1]
     
-    # --- Robust Proactive Alert Logic ---
-    freq_now = current_row['grid_frequency']
-    
-    # 1. Emergency (Red): Imminent Blackout Risk
-    # Trigger if breach is predicted OR if high-probability instability is detected while freq < 50.1
-    emergency_trigger = (
-        lower_bound_pred < alert_threshold_hz 
-        or freq_now < alert_threshold_hz
-        or (lstm_prob > 0.4 and freq_now < 50.1)
-        or (classifier_prob > 0.4 and freq_now < 50.1)
-    )
-    
-    # 2. Warning (Yellow): General Instability / High Frequency
-    warning_trigger = (
-        freq_now > 50.15
-        or (classifier_prob > 0.25)
-        or (lstm_prob > 0.25)
-    )
+    # ── PHYSICS-INFORMED MULTI-SIGNAL ALERT ──────────────────────────────────────
+    rocof_now   = current_row.get('rocof_smooth', current_row.get('rocof', 0.0))
+    rocof_5s    = current_row.get('rocof_5s', 0.0)
+    rocof_accel = current_row.get('rocof_accel', 0.0)
+    volatility  = current_row.get('volatility_10s', 0.0)
+    freq_now    = current_row['grid_frequency']
+    ren_pen     = current_row.get('renewable_penetration_ratio', 0.0)
+
+    # Physics signal: sustained negative RoCoF + frequency deviation
+    rocof_alert = (rocof_now < -0.015) and (freq_now < 50.05)
+    # Acceleration alert: RoCoF getting WORSE (second derivative negative)
+    accel_alert = (rocof_accel < -0.005)
+    # Volatility alert: high turbulence even at "normal" freq
+    volatility_alert = (volatility > 0.02) and (freq_now < 50.1)
+    # Renewable stress: high penetration + any negative RoCoF
+    renewable_stress = (ren_pen > 0.15) and (rocof_now < -0.01)
+    # Frequency boundary proximity
+    freq_boundary = freq_now < 49.95
+
+    # Score-based fusion (count how many signals are firing)
+    signal_count = sum([
+        rocof_alert,
+        accel_alert,
+        volatility_alert,
+        renewable_stress,
+        freq_boundary,
+        classifier_prob > 0.35,
+        lstm_prob > 0.35,
+    ])
+
+    # Alert levels based on signal convergence
+    emergency_trigger = signal_count >= 3 or freq_now < alert_threshold_hz
+    warning_trigger   = signal_count >= 2 or (classifier_prob > 0.25) or (lstm_prob > 0.25)
 
     # --- Alert Persistence Logic ---
     if "last_alert_time" not in st.session_state:

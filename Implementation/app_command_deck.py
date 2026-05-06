@@ -695,9 +695,7 @@ mid_pred = (lo_pred + up_pred) / 2.0
 freq = current_row["grid_frequency"]
 rocof = current_row["rocof"]
 
-is_alert = lo_pred < alert_hz or freq < alert_hz
-
-# LSTM
+# LSTM Probability (needed for fusion)
 w_start = max(0, time_index - LSTM_TIME_STEPS + 1)
 lstm_df = df_data.iloc[w_start : time_index + 1]
 lstm_alert = False
@@ -707,12 +705,48 @@ if len(lstm_df) == LSTM_TIME_STEPS:
     lstm_prob = float(lstm_m.predict(np.array([lstm_sc]), verbose=0)[0][0])
     lstm_alert = lstm_prob > 0.5
 
+# ── PHYSICS-INFORMED MULTI-SIGNAL ALERT ──────────────────────────────────────
+rocof_now   = current_row.get('rocof_smooth', current_row.get('rocof', 0.0))
+rocof_5s    = current_row.get('rocof_5s', 0.0)
+rocof_accel = current_row.get('rocof_accel', 0.0)
+volatility  = current_row.get('volatility_10s', 0.0)
+freq_now    = current_row["grid_frequency"]
+ren_pen     = current_row.get('renewable_penetration_ratio', 0.0)
+
+# LGBM Classifier probability
+X_in_cls = pd.DataFrame([current_row[LGBM_FEATURE_COLS].values], columns=LGBM_FEATURE_COLS)
+classifier_prob = float(cls_m.predict_proba(X_in_cls)[0][1])
+
+# Physical signals
+rocof_alert = (rocof_now < -0.015) and (freq_now < 50.05)
+accel_alert = (rocof_accel < -0.005)
+volatility_alert = (volatility > 0.02) and (freq_now < 50.1)
+renewable_stress = (ren_pen > 0.15) and (rocof_now < -0.01)
+freq_boundary = freq_now < 49.95
+
+# Score-based fusion
+signal_count = sum([
+    rocof_alert,
+    accel_alert,
+    volatility_alert,
+    renewable_stress,
+    freq_boundary,
+    classifier_prob > 0.35,
+    lstm_prob > 0.35,
+])
+
+emergency_trigger = signal_count >= 3 or freq_now < alert_hz
+warning_trigger   = signal_count >= 2 or (classifier_prob > 0.25) or (lstm_prob > 0.25)
+
+# Backwards compatibility for downstream components
+is_alert = emergency_trigger
+
 # Combined status
-if is_alert and lstm_alert:
+if emergency_trigger:
     status = "INSTABILITY ALERT"
     status_class = "alert-critical"
     status_icon = "🚨"
-elif is_alert or lstm_alert:
+elif warning_trigger:
     status = "HIGH MODEL UNCERTAINTY"
     status_class = "alert-warning"
     status_icon = "⚠️"
@@ -1312,7 +1346,8 @@ def compute_model_metrics(
     X_e = day_eval[_lgbm_feature_cols]
     lo_d = _lo_m.predict(X_e)
     up_d = _up_m.predict(X_e)
-    a_lo, a_up = _quantile_alphas
+    a_lo = _quantile_alphas[1]
+    a_up = _quantile_alphas[5]
     e_lo = y_t - lo_d
     pb_lo = np.mean(np.maximum(a_lo * e_lo, (a_lo - 1) * e_lo))
     e_up = y_t - up_d

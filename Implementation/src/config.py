@@ -108,6 +108,21 @@ LGBM_PARAMS = {
     'verbose': -1
 }
 
+LGBM_QUANTILE_PARAMS = {
+    'n_estimators': 300,        # more trees needed for quantile task
+    'learning_rate': 0.03,      # slower learning = better generalisation
+    'max_depth': 6,             # shallower = less overfit to point estimates
+    'num_leaves': 31,
+    'min_child_samples': 50,    # prevents tiny leaves that memorise noise
+    'subsample': 0.8,           # row subsampling = variance reduction
+    'colsample_bytree': 0.8,    # feature subsampling
+    'reg_alpha': 0.1,           # L1 regularisation
+    'reg_lambda': 1.0,          # L2 regularisation
+    'random_state': 42,
+    'n_jobs': -1,
+    'verbose': -1
+}
+
 # 4. WEATHER API CONFIGURATION
 # -----------------------------------------------------------------------------
 WEATHER_API_URL = "https://archive-api.open-meteo.com/v1/archive"

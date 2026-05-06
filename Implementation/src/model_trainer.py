@@ -15,7 +15,7 @@ from tensorflow.keras.callbacks import EarlyStopping # Import EarlyStopping
 from src.config import (
     SPLIT_DATE, END_TEST_DATE, LGBM_FEATURE_COLS, TARGET_COL, TARGET_FREQ_NEXT,
     LSTM_FEATURE_COLS, LSTM_TIME_STEPS, LSTM_EPOCHS, LSTM_BATCH_SIZE,
-    LSTM_VALIDATION_SPLIT, LGBM_PARAMS, QUANTILE_ALPHAS
+    LSTM_VALIDATION_SPLIT, LGBM_PARAMS, LGBM_QUANTILE_PARAMS, QUANTILE_ALPHAS
 )
 
 # --- Quantile Regression Metrics ---
@@ -114,12 +114,18 @@ def train_quantile_model(df, alpha):
     y_test = test.select(TARGET_FREQ_NEXT).to_pandas().values.ravel()
 
 
-    params = LGBM_PARAMS.copy()
+    params = LGBM_QUANTILE_PARAMS.copy()
     params['objective'] = 'quantile'
     params['alpha'] = alpha
     
     model = lgb.LGBMRegressor(**params)
-    model.fit(X_train, y_train)
+    
+    # Upweight samples where target frequency is low (approaching instability)
+    # This forces the model to care about the tails, not just average behaviour
+    sample_weights = np.where(y_train < 49.95, 10.0,   # strong weight on low-freq samples
+                     np.where(y_train < 50.00, 3.0,     # moderate weight approaching boundary
+                     1.0))                               # normal weight otherwise
+    model.fit(X_train, y_train, sample_weight=sample_weights)
     
     # Evaluate Pinball Loss on test set
     y_pred_quantile = model.predict(X_test)
