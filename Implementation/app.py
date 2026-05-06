@@ -79,107 +79,46 @@ st.markdown("""
 
 # -----------------------------------------------------------------------------
 # 2. LOAD RESOURCES
+# ----------------------------------------------------------------------# -----------------------------------------------------------------------------
+# 2. CACHED LOADING FUNCTIONS
 # -----------------------------------------------------------------------------
-# Using st.cache_data for this function as it depends on user input dates.
-# The hash will change when dates change, triggering a re-run.
-@st.cache_data(show_spinner="Loading models and data for selected date range...")
-def load_resources_and_data(start_date_str: str, end_date_str: str):
-    # Calculate current source hash and clear stale cache
-    src_hash = get_src_hash()
-    clear_invalid_cache(src_hash)
-    
-    # Define cache file path for this specific date range and source version
-    cache_filename = f"processed_data_{start_date_str}_to_{end_date_str}_{src_hash}.parquet"
-    cache_path = CACHE_DIR / cache_filename
-    
-    # Define paths using config constants
-    lower_model_path = LGBM_QUANTILE_LOWER_PATH
-    upper_model_path = LGBM_QUANTILE_UPPER_PATH
-    lstm_model_path = LSTM_MODEL_PATH
-    scaler_path = SCALER_PATH
-    classifier_path = LGBM_MODEL_PATH
-    
-    # Check for models
-    required_models = [lower_model_path, upper_model_path, lstm_model_path, scaler_path, classifier_path]
-    missing = [f for f in required_models if not os.path.exists(f)]
-    if missing:
-        st.error(f"🚨 MISSING MODEL FILES ERROR: {', '.join(missing)}")
-        st.warning("Please ensure you have run the pipeline to generate the models.")
-        st.stop()
 
-    # Load Models
-    lower_model = joblib.load(lower_model_path)
-    upper_model = joblib.load(upper_model_path)
-    classifier_model = joblib.load(classifier_path)
-    lstm_model = tf.keras.models.load_model(lstm_model_path)
-    scaler = joblib.load(scaler_path)
+@st.cache_resource
+def load_models(model_stamp: tuple):
+    """Load model objects. Re-runs ONLY if model files on disk change."""
+    lower_model = joblib.load(LGBM_QUANTILE_LOWER_PATH)
+    upper_model = joblib.load(LGBM_QUANTILE_UPPER_PATH)
+    classifier_model = joblib.load(LGBM_MODEL_PATH)
+    lstm_model = tf.keras.models.load_model(LSTM_MODEL_PATH)
+    scaler = joblib.load(SCALER_PATH)
     
     quantiles_all_path = "notebooks/lgbm_quantiles_all.pkl"
     quantile_models = joblib.load(quantiles_all_path) if os.path.exists(quantiles_all_path) else None
     
-    # --- Check Cache Hit ---
-    if cache_path.exists():
-        st.sidebar.success(f"⚡ Loaded from cache for {start_date_str}")
-        df_data = pd.read_parquet(cache_path)
-    else:
-        st.sidebar.info(f"🔄 Processing data for {start_date_str}...")
-        # --- Data Ingestion via API ---
-        # Fetch frequency data
-        df_freq = fetch_frequency_data(
-            start_date=start_date_str,
-            end_date=end_date_str
-        )
-        if df_freq.is_empty():
-            st.error("🚨 Failed to load frequency data from API. Please check your date range or API connection.")
-            st.stop()
+    return lower_model, upper_model, classifier_model, lstm_model, scaler, quantile_models
 
-        # Fetch weather data
-        df_weather = fetch_weather_data(
-            start_date=start_date_str,
-            end_date=end_date_str
-        )
-        if df_weather.is_empty():
-            st.error("🚨 Failed to load weather data from API. Please check your date range or API connection.")
-            st.stop()
-
-        # Fetch inertia data
-        df_inertia = fetch_inertia_data_halfhourly(
-            start_date=start_date_str,
-            end_date=end_date_str
-        )
-        if df_inertia.is_empty():
-            st.error("🚨 Failed to load inertia data from API. Please check your date range or API connection.")
-            st.stop()
-
-        # --- Merge Datasets ---
-        df_merged_pl = merge_datasets(df_freq, df_weather, df_inertia)
-        df_merged = df_merged_pl.to_pandas() # Convert to Pandas DataFrame for SHAP and joblib models
-        
-        # --- Feature Engineering ---
-        df_data = create_features(df_merged)
-
-        if df_data.empty:
-            st.error("🚨 After merging and feature engineering, no data remains. Please adjust your date range or data sources.")
-            st.stop()
-
-        # Convert timestamp to datetime if not already (after feature engineering)
-        df_data['timestamp'] = pd.to_datetime(df_data['timestamp'])
-        
-        # Save to cache for next time
-        df_data.to_parquet(cache_path)
+@st.cache_data(show_spinner="Loading and processing dataset...")
+def load_processed_data(start_date_str: str, end_date_str: str, src_hash: str):
+    """Fetch and process data. Re-runs if dates or src/ code changes."""
+    # Logic to fetch from API and merge
+    df_freq = fetch_frequency_data(start_date_str, end_date_str)
+    df_weather = fetch_weather_data(start_date_str, end_date_str)
+    df_inertia = fetch_inertia_data_halfhourly(start_date_str, end_date_str)
     
-    # Create explainer for the lower bound model
-    # (Optional) we could pre-calculate SHAP values for the whole day here to save time
-    explainer = shap.TreeExplainer(lower_model)
+    df_merged_pl = merge_datasets(df_freq, df_weather, df_inertia)
+    df_merged = df_merged_pl.to_pandas()
+    df_data = create_features(df_merged)
+    df_data['timestamp'] = pd.to_datetime(df_data['timestamp'])
     
-    # Load calibrators if available (optional — improves quantile calibration)
+    # Pre-calculate calibrators and explainer
     lower_calibrator, upper_calibrator = None, None
     if os.path.exists(LOWER_CALIBRATOR_PATH) and os.path.exists(UPPER_CALIBRATOR_PATH):
         lower_calibrator = joblib.load(LOWER_CALIBRATOR_PATH)
         upper_calibrator = joblib.load(UPPER_CALIBRATOR_PATH)
-        st.sidebar.success("✅ Quantile calibrators loaded")
     
-    return lower_model, upper_model, classifier_model, lstm_model, scaler, df_data, explainer, lower_calibrator, upper_calibrator, quantile_models
+    # We use a placeholder for the explainer as it depends on the loaded model
+    # (will be initialized at top level)
+    return df_data, lower_calibrator, upper_calibrator
 
 
 # -----------------------------------------------------------------------------
@@ -188,22 +127,38 @@ def load_resources_and_data(start_date_str: str, end_date_str: str):
 st.sidebar.title("⚡ GridGuardian Controls")
 st.sidebar.subheader("Data Selection")
 
-# Default dates for the date picker
+# Timezone Note for Dissertation
+st.sidebar.info("🌐 **Timezone Note**: Dashboard operates in **UTC**. The Aug 9, 2019 event occurred at **15:52 UTC** (16:52 BST).")
+
 default_start_date = pd.to_datetime(WEATHER_API_DEFAULT_START_DATE).date()
 default_end_date = pd.to_datetime(WEATHER_API_DEFAULT_END_DATE).date()
 
-# Date range pickers
 col_date1, col_date2 = st.sidebar.columns(2)
 with col_date1:
     selected_start_date = st.date_input("Start Date", value=default_start_date)
 with col_date2:
     selected_end_date = st.date_input("End Date", value=default_end_date)
 
-# Load resources based on selected dates
-lower_model, upper_model, classifier_model, lstm_model, scaler, df_data, explainer, lower_calibrator, upper_calibrator, quantile_models = load_resources_and_data(
-    selected_start_date.strftime("%Y-%m-%d"),
-    selected_end_date.strftime("%Y-%m-%d")
+# --- EXECUTE LOADING ---
+# 1. Models (Keyed by file timestamps)
+model_stamp = (
+    os.path.getmtime(LGBM_QUANTILE_LOWER_PATH),
+    os.path.getmtime(LGBM_QUANTILE_UPPER_PATH),
+    os.path.getmtime(LGBM_MODEL_PATH),
+    os.path.getmtime(LSTM_MODEL_PATH),
+    os.path.getmtime(SCALER_PATH),
 )
+lower_model, upper_model, classifier_model, lstm_model, scaler, quantile_models = load_models(model_stamp)
+
+# 2. Data (Keyed by dates and code version)
+df_data, lower_calibrator, upper_calibrator = load_processed_data(
+    selected_start_date.strftime("%Y-%m-%d"),
+    selected_end_date.strftime("%Y-%m-%d"),
+    get_src_hash()
+)
+
+# 3. Explainer (Static per session)
+explainer = shap.TreeExplainer(lower_model)
 
 # Defensive check: Ensure df_data is not empty after loading
 if df_data.empty:
@@ -457,7 +412,7 @@ else: # Only proceed if df_data is not empty
             col4.error(f"⚠️ INSTABILITY ALERT")
             col5.metric("Time to Alert", f"{tta_seconds_user} sec", "⚠️")
         elif persistent_alert:
-            col4.warning(f"⚠️ HIGH RISK / RECOVERY")
+            col4.warning(f"⚠️ HIGH MODEL UNCERTAINTY")
             col5.metric("Time to Alert", f"{tta_seconds_user} sec", "⚠️")
         else:
             col4.success(f"✅ SYSTEM STABLE")
