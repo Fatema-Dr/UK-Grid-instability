@@ -334,7 +334,7 @@ else: # Only proceed if df_data is not empty
     )
     st.sidebar.caption(f"ℹ️ Model trained at {TTA_SECONDS}s horizon.")
 
-    alert_threshold_hz = st.sidebar.slider("Instability Threshold (Hz)", 49.5, 49.9, 49.8, 0.05)
+    alert_threshold_hz = st.sidebar.slider("Instability Threshold (Hz)", 49.5, 49.95, 49.85, 0.05)
 
     # --- Intervention Simulator ---
     st.sidebar.markdown("---")
@@ -388,8 +388,14 @@ else: # Only proceed if df_data is not empty
         lstm_prob = lstm_model.predict(lstm_input_seq, verbose=0)[0][0]
         lstm_alert = lstm_prob > 0.5
 
-    # Alert if predicted lower bound is below threshold OR current frequency already is
-    is_alert = lower_bound_pred < alert_threshold_hz or current_row['grid_frequency'] < alert_threshold_hz
+    # (uses classifier as primary signal):
+    input_lgbm_cls = pd.DataFrame([current_row[LGBM_FEATURE_COLS].values], columns=LGBM_FEATURE_COLS)
+    classifier_prob = classifier_model.predict_proba(input_lgbm_cls)[0][1]
+    is_alert = (
+        lower_bound_pred < alert_threshold_hz
+        or current_row['grid_frequency'] < alert_threshold_hz
+        or classifier_prob > 0.5   # ← classifier says unstable
+)
 
 
     # --- Sidebar UI components ---
@@ -400,6 +406,7 @@ else: # Only proceed if df_data is not empty
         st.write(f"is_alert (LGBM): {'✅' if (lower_bound_pred < alert_threshold_hz or current_row['grid_frequency'] < alert_threshold_hz) else '❌'}")
         st.write(f"LSTM Prob: {lstm_prob:.4f}")
         st.write(f"lstm_alert: {'✅' if lstm_prob > 0.5 else '❌'}")
+        st.write(f"Classifier P(unstable): {classifier_prob:.4f}")
     
     if synthetic_inertia_mw > 0:
         st.sidebar.caption(f"⚡ Swing Eq: Δf = ({synthetic_inertia_mw} × {NOMINAL_FREQ}) / (2 × {SYSTEM_INERTIA_H} × {TOTAL_SYSTEM_CAPACITY}) = **+{swing_delta_f:.4f} Hz**")
