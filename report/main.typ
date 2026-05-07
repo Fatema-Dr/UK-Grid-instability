@@ -25,5 +25,6 @@
 #include "chapters/04_implementation.typ"
 #include "chapters/05_evaluation.typ"
 #include "chapters/06_conclusion.typ"
+#include "chapters/Appendix.typ"
 
 #bibliography("works.bib", style: "apa")
