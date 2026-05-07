@@ -18,13 +18,13 @@ fig_dir = "/home/yogipatel/Documents/UK-Grid-instability/report/figures/"
 
 # Specific pixel counts based on visual inspection
 tasks = [
-    ("figure_3_1_system_architecture.png", 220),
+    ("figure_3_1_system_architecture.png", 0),
     ("figure_4_4_residual_analysis.png", 110),
-    ("figure_4_2_feature_importance.png", 100),
+    ("figure_4_2_feature_importance.png", 0),
     ("figure_5_4_calibration_reliability.png", 100),
-    ("figure_5_2_shap_waterfall.png", 100),
+    ("figure_5_2_shap_waterfall.png", 0),
     ("figure_5_3_intervention_simulation.png", 200),
-    ("figure_5_5_shap_summary_beeswarm.png", 100),
+    ("figure_5_5_shap_summary_beeswarm.png", 0),
     ("impressive_uncertainty_ribbon.png", 120)
 ]
 

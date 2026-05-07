@@ -55,7 +55,7 @@ A critical distinction must be made between the model's objective function and t
 
 This specific window was selected to test whether a predictive alert could comfortably exceed the 1.0-second mechanical deployment constraint of Enhanced Frequency Response (EFR) batteries. It must be noted that this $t+10$ horizon is a *design target*; the realized predictive lead-time during a cascading fault is a function of the model’s realized sensitivity and the non-linear dynamics of the specific event, and is not a guaranteed constant of the architecture. A future state is flagged with a binary `target_is_unstable` alert if the model's predicted lower quantile breaches any of the following physical failure bounds:
 
-1.  *Statutory Breach:* The predicted 10th percentile frequency drops below $49.85$ Hz.
+1.  *Operational Breach:* The predicted 10th percentile frequency drops below $49.85$ Hz.
 2.  *Momentum Failure:* The predicted 10th percentile frequency drops below $49.95$ Hz while the current smoothed RoCoF is worse than $-0.02$ Hz/s.
 
 == Machine Learning Architecture
@@ -68,7 +68,7 @@ Standard $k$-fold cross-validation is invalid for time-series data. The evaluati
 2. *Calibration Set*: August 7–8, 2019 (Used for post-hoc isotonic recalibration).
 3. *Testing Set*: August 9, 2019 (Including the discontinuous blackout event).
 
-While the formal training boundary is set at August 9, the authors acknowledge that the calibration set (August 7-8) was part of the broader model development phase, representing a quantified risk of *calibration leakage* that is addressed during the final evaluation in Chapter 5.
+While the training data is restricted to the period before August 9, the author acknowledges that the calibration set (August 7–8) was used for model tuning, representing a risk of *calibration leakage* that is addressed in Chapter 5.
 
 === Post-hoc Isotonic Recalibration
 
@@ -76,7 +76,7 @@ Initial evaluation demonstrated that the LightGBM quantile outputs exhibited a p
 
 === Baseline Architecture: LSTM with Monte Carlo Dropout
 
-To establish a rigorous performance benchmark, a deep recurrent Long Short-Term Memory (LSTM) network was implemented. To ensure a direct comparison with the probabilistic LightGBM engine, the LSTM utilizes Monte Carlo Dropout @gal2016dropout during inference. By maintaining dropout layers in an active state during prediction across 100 stochastic passes, the baseline generates a predictive distribution, allowing for the derivation of 10th percentile uncertainty bounds comparable to the primary GridGuardian quantile architecture.
+To establish a performance benchmark, a recurrent Long Short-Term Memory (LSTM) network was implemented. The LSTM utilizes Monte Carlo Dropout @gal2016dropout during inference. By maintaining dropout layers in an active state during prediction across 100 stochastic passes, the baseline generates a predictive distribution for comparison. The LSTM baseline was not subjected to extensive hyperparameter optimization; a more tuned LSTM architecture might narrow the performance gap with the tree-based model.
 
 #box(stroke: 1pt, inset: 10pt, width: 100%)[
   *GridGuardian: Scope of Contributions*

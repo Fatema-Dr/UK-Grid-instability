@@ -51,10 +51,10 @@ Because the continuous quantile bounds are heuristically converted into a binary
     [F1-Score], [96.6%], [[95.6%, 97.4%]],
     [ROC-AUC], [0.998], [[0.996, 0.999]]
   ),
-  caption: [Binary classification performance metrics for the heuristic alert system on the August 2019 test set ($N=3,600$ unstable events out of approximately 2.6 million total records, representing a local imbalance of ~722:1 during the high-volatility validation period).]
+  caption: [Binary classification performance metrics for the alert system on the August 9 hold-out test set ($N=86,400$ records). The reported recall of 99.2% reflects the system's sensitivity to structural failure within the test period. However, this high sensitivity is partially due to the heuristic alignment between the instability labels and the physical signals used as features, as discussed in Section 5.2.]
 )
 
-The system achieves a 99.2% recall rate on a test set containing 3,600 verified unstable events (defined by the physical heuristic bounds). This statistically significant sample size confirms the system's robust sensitivity to structural failure. The accompanying precision of 94.1% indicates a low false-positive rate, crucial for avoiding "alarm fatigue" in operational control rooms. In this safety-critical context, the more diagnostically meaningful metric is Recall, which directly quantifies the system's ability to minimize catastrophic missed alerts. However, as Section 4.5 demonstrates, high statistical recall on hold-out data does not necessarily translate into a predictive lead-time advantage during catastrophic transients.
+The system achieves a 99.2% recall rate on the test set. This confirms the system's sensitivity to structural failure. The accompanying precision of 94.1% indicates a low false-positive rate, avoiding "alarm fatigue" in operational control rooms. In this context, the more diagnostically meaningful metric is Recall, which quantifies the system's ability to minimize missed alerts. However, as Section 4.5 demonstrates, high statistical recall on hold-out data does not necessarily translate into a predictive lead-time advantage during rapid transients.
 
 == Feature Importance: Validating the Physics Integration
 
@@ -82,7 +82,7 @@ The recalibrated PICP result of 73.5% still represents a failure of the 80% thre
   caption: [Calibration reliability diagrams demonstrating the alignment of forecasted probability quantiles with empirical observation frequencies.]
 )
 
-The calibration analysis (Figure 4) reveals that prior to post-hoc adjustment, the raw model exhibited a significant bias. The application of Isotonic Regression attempts to remap these probabilities; however, the persistent 73.5% PICP failure suggests that recalibration alone cannot compensate for the model’s structural inability to capture the most extreme tail-risk events. While the bounds are "trustworthy" for 73% of observations, they do not yet satisfy the legal requirements for automated EFR intervention without a wider safety margin.
+The calibration analysis (Figure 4) reveals that prior to post-hoc adjustment, the raw model exhibited a significant bias. The application of Isotonic Regression attempts to remap these probabilities; however, the persistent 73.5% PICP failure suggests that recalibration alone cannot compensate for the model’s structural inability to capture the most extreme tail-risk events. While the bounds are "trustworthy" for 73% of observations, they do not yet satisfy the operational requirements for automated EFR intervention without a wider safety margin.
 
 == Forensic AI (XAI) and The August Blackout Reconstruction
 
@@ -111,7 +111,7 @@ The definitive evaluation of the system is its response to the August 9, 2019 bl
   caption: [Signal state analysis tracing the multi-physics 'Fragility Fingerprint' during the August 9, 2019 blackout.]
 )
 
-As documented in Table 6, the 'Fragility Fingerprint' was successfully activated during the fault window. However, the primary alert trigger occurred at *15:54:04 UTC*. Given that the frequency nadir (the point of maximum instability) occurred at *15:53:49 UTC*, this trigger represents a *reactive identification* of the failure rather than a predictive warning (Table 5). The system provided a 15-second "post-nadir" forensic confirmation. While this is operationally useful for automated incident reporting, it fails to meet the 1.0-second predictive lead-time required for EFR battery deployment during this specific catastrophic event.
+As documented in Table 6, the 'Fragility Fingerprint' was successfully activated during the fault window. However, the primary alert trigger occurred at *15:54:04 UTC*. Given that the frequency nadir (the point of maximum instability) occurred at *15:53:49 UTC*, this trigger represents a *reactive identification* of the failure rather than a predictive warning. The system provided a 15-second "post-nadir" forensic confirmation. While this is operationally useful for automated incident reporting, it fails to meet the 1.0-second predictive lead-time required for EFR battery deployment during this specific severe event.
 
 === SHAP Waterfall Decomposition
 

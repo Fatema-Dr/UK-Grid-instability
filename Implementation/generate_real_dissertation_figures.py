@@ -378,7 +378,7 @@ ax.set_title(f"Figure 6: SHAP Waterfall — Alert Trigger\n"
              f"Timestamp: {alert_ts.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
              f"Predicted lower bound: {pred_val:.4f} Hz",
              fontweight="bold", pad=15)
-ax.legend(fontsize=9, loc="lower right")
+ax.legend(fontsize=9, loc="upper right", bbox_to_anchor=(0.92, 1.0))
 ax.grid(True, alpha=0.3, axis="x")
 save_fig(fig, "figure_5_2_shap_waterfall.png")
 print(f"  Alert fired at: {alert_ts.strftime('%Y-%m-%d %H:%M:%S UTC')}")

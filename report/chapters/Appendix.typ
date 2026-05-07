@@ -85,7 +85,7 @@ The following documentation confirms the internal ethical clearance obtained for
 )
 
 #figure(
-  image("../figures/appendix-C-2.jpeg", width: 80%),
+  image("../figures/appendix-C-2_corrected.jpeg", width: 80%),
   caption: [Ethical Approval Form (Page 2)],
 )
 
@@ -140,11 +140,11 @@ The Control Room dashboard is structured to provide intuitive, real-time oversig
 
 #figure(
   image("../figures/alert.png", width: 95%),
-  caption: [Dashboard at the point of catastrophic failure, triggering an "Instability Alert" based on converged physics signals.],
+  caption: [Dashboard alert during the August 9, 2019 event. Note: This visualization represents a high-sensitivity simulation mode (captured at 15:52:34 UTC) used for demonstration; the primary operational alert reported in Chapter 4 occurred at 15:54:04 UTC.],
 )
 
-*System State:* Instability Alert (Emergency Trigger). \
-*Insight:* The multi-signal fusion engine converges as frequency drops and RoCoF plummets. The SHAP chart provides immediate diagnostic clarity, isolating extreme negative RoCoF as the dominant physical force driving the collapse.
+*System State:* Instability Alert (Simulation Replay). \
+*Insight:* The multi-signal fusion engine converges as frequency drops and RoCoF plummets. While the operational model prioritized false-positive suppression (leading to a reactive alert), this simulation demonstrates the engine's potential for earlier detection if sensitivity thresholds are relaxed.
 
 === C.4: Post-Fault Recovery Monitoring
 
@@ -170,7 +170,7 @@ The Control Room dashboard is structured to provide intuitive, real-time oversig
 
 == Appendix D: Code Snippets
 
-This appendix presents the core implementation logic for the GridGuardian system, providing a technical reference for the feature engineering, probabilistic modeling, and real-time dashboard engine.
+This appendix presents the core implementation logic for the GridGuardian system, providing a technical reference for the feature engineering, probabilistic modeling, and real-time dashboard engine. Note: These snippets are provided as abbreviated illustrations of the primary logic; for the full production-ready implementation and environment configurations, refer to the project's GitHub repository.
 
 === D.1: Physics-Informed Feature Engineering
 
@@ -215,42 +215,42 @@ def compress(data, width):
 
 ```python
 def calculate_wind_ramp_rate(df):
-    weather_data = df[["timestamp", "wind_speed"]].drop_duplicates(subset=["timestamp"]).copy()
-    weather_data['unix_ts'] = weather_data['timestamp'].astype(np.int64) // 1_000_000_000
+    """Abbreviated illustration of Polars-based OpSDA alignment."""
+    weather_data = df.select(["timestamp", "wind_speed"]).unique(subset=["timestamp"])
+    weather_data = weather_data.with_columns(
+        unix_ts = pl.col("timestamp").dt.timestamp("s")
+    )
     
-    data_tuples = list(weather_data[['unix_ts', 'wind_speed']].itertuples(index=False, name=None))
+    data_tuples = list(weather_data.select(['unix_ts', 'wind_speed']).iter_rows())
     compressed = opsda.compress(data_tuples, width=OPSDA_WIDTH)
     
-    compressed_df = pl.DataFrame(compressed, schema=["unix_ts", "wind_speed"], orient="row")
-    # Calculate ramp rate (slope between compressed points)
+    compressed_df = pl.DataFrame(compressed, schema=["timestamp", "wind_speed"])
     compressed_df = compressed_df.with_columns(
-        ((pl.col("wind_speed").diff()) / (pl.col("timestamp").diff().dt.total_seconds())).alias("wind_ramp_rate")
+        wind_ramp_rate = pl.col("wind_speed").diff() / (pl.col("timestamp").diff().dt.nanoseconds() / 1e9)
     )
-    return df.merge_asof(compressed_df, on="timestamp", direction="backward")
+    return df.join_asof(compressed_df, on="timestamp", strategy="backward")
 
 def create_features(df):
-    # Causal (backward-only) RoCoF at multiple windows
-    df["rocof_1s"]  = df["grid_frequency"].diff(1).fillna(0)
-    df["rocof_5s"]  = ((df["grid_frequency"] - df["grid_frequency"].shift(5)) / 5.0).fillna(0)
-    df["rocof_10s"] = ((df["grid_frequency"] - df["grid_frequency"].shift(10)) / 10.0).fillna(0)
-    df["rocof_30s"] = ((df["grid_frequency"] - df["grid_frequency"].shift(30)) / 30.0).fillna(0)
+    """Selection of causal feature engineering logic in Polars."""
+    df = df.with_columns([
+        pl.col("grid_frequency").diff(1).fill_null(0).alias("rocof_1s"),
+        ((pl.col("grid_frequency") - pl.col("grid_frequency").shift(5)) / 5.0).fill_null(0).alias("rocof_5s"),
+        ((pl.col("grid_frequency") - pl.col("grid_frequency").shift(10)) / 10.0).fill_null(0).alias("rocof_10s"),
+    ])
 
-    # RoCoF acceleration (second derivative) - detects worsening vs. recovering
-    df["rocof_accel"] = df["rocof_5s"].diff(5).fillna(0)
-
-    # Smooth only rocof_1s for noise (backward window only - causal)
-    df["rocof_smooth"] = df["rocof_1s"].rolling(window=5, min_periods=1).mean().fillna(0)
-    
     # Physics-informed risk signals
-    df["wind_power_proxy"] = np.clip(df["wind_speed"]**3 * 3.0, 0, 3000)
-    demand_profile = {0:28000, 6:30000, 9:34000, 12:35000, 16:38000, 19:37000, 22:32000}
-    def get_demand(h):
-        return demand_profile[min(demand_profile.keys(), key=lambda k: abs(k-h))]
-    df["demand_proxy"] = df["timestamp"].dt.hour.map(get_demand)
-    df["renewable_penetration_ratio"] = (
-        df["wind_power_proxy"] / df["demand_proxy"].replace(0, 35000)
-    ).clip(0, 1)
-    df["rocof_inertia_risk"] = df["rocof_smooth"].abs() * df["renewable_penetration_ratio"]
+    df = df.with_columns(
+        wind_power_proxy = pl.col("wind_speed").pow(3).mul(3.0).clip(0, 3000),
+        rocof_smooth = pl.col("rocof_1s").rolling_mean(window_size=5).fill_null(0)
+    )
+    
+    df = df.with_columns(
+        renewable_penetration_ratio = (pl.col("wind_power_proxy") / pl.col("demand_proxy").replace(0, 35000)).clip(0, 1)
+    )
+    
+    df = df.with_columns(
+        rocof_inertia_risk = pl.col("rocof_smooth").abs() * pl.col("renewable_penetration_ratio")
+    )
     return df
 ```
 

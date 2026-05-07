@@ -2,7 +2,7 @@
 
 == Introduction
 
-The structural transition of electricity grids toward inverter-based renewable energy sources presents a fundamental challenge to frequency stability. The displacement of synchronous generation reduces system inertia, fundamentally modifying the physical dynamics of frequency response and severely compressing the time available for operator intervention. This review systematically synthesises current research concerning grid stability in low-inertia environments. It evaluates the comparative efficacy of machine learning forecasting architectures and the critical integration of physical constraints into data-driven models. The chapter examines the specific operational requirements for predictive alerting systems and the absolute necessity of algorithmic interpretability in safety-critical grid management.
+The structural transition of electricity grids toward inverter-based renewable energy sources presents a fundamental challenge to frequency stability. The displacement of synchronous generation reduces system inertia, modifying the physical dynamics of frequency response and reducing the time available for operator intervention. This review synthesises current research concerning grid stability in low-inertia environments. It evaluates the comparative efficacy of machine learning forecasting architectures and the integration of physical constraints into data-driven models. The chapter examines the specific operational requirements for predictive alerting systems and the necessity of algorithmic interpretability in safety-critical grid management.
 
 == Global Perspectives and Comparative Grid Failures
 
@@ -10,15 +10,15 @@ While this research focuses on the UK National Grid, the challenges of low-inert
 
 === The Texas ERCOT 2021 Winter Storm
 
-A definitive example of cascading grid failure occurred in February 2021 in the ERCOT (Electric Reliability Council of Texas) interconnection. The Texas failure represents a distinct failure mode compared to the UK 2019 event: rather than a rapid, transient frequency collapse caused by a singular lightning strike, it was a sustained, multi-day systemic failure triggered by extreme cold weather and un-winterized thermal generation assets. 
+A clear example of cascading grid failure occurred in February 2021 in the ERCOT (Electric Reliability Council of Texas) interconnection. The Texas failure represents a distinct failure mode compared to the UK 2019 event: rather than a rapid, transient frequency collapse caused by a singular lightning strike, it was a sustained, systemic failure triggered by extreme cold weather and un-winterized thermal generation assets. 
 
-Despite these differences, both events share the same underlying physical vulnerability: a sudden and violent mismatch between load and generation that precipitates a dangerous frequency nadir. During the Texas storm, the grid frequency dropped below the 59.4 Hz statutory limit in under four seconds, forcing operators into manual load-shedding to avert a total "black start" scenario. This contrast demonstrates that while generation-load mismatches are universal, their temporal dynamics vary wildly. Consequently, any predictive alerting system must be rigorously calibrated to the specific failure modes—whether transient or sustained—of its target network, rather than relying on a generalized detection logic.
+Despite these differences, both events share the same underlying physical vulnerability: a sudden mismatch between load and generation that precipitates a dangerous frequency nadir. During the Texas storm, the grid frequency dropped below the 59.4 Hz operational limit in under four seconds, forcing operators into manual load-shedding to avert a total "black start" scenario. This contrast demonstrates that while generation-load mismatches are universal, their temporal dynamics vary. Consequently, any predictive alerting system must be calibrated to the specific failure modes—whether transient or sustained—of its target network, rather than relying on a generalized detection logic.
 
 === The South Australian Blackout (2016)
 
-The South Australian blackout of 2016 represents the "canary in the coal mine" for low-inertia grids. Triggered by a severe storm that damaged transmission lines, the grid—which had over 40% wind penetration at the time—experienced a catastrophic RoCoF that exceeded the capabilities of existing protection relays. The Australian Energy Market Operator (AEMO) @aemo2017blackout noted that the speed of the frequency collapse was so great that human dispatchers could not respond in time.
+The South Australian blackout of 2016 represents an early warning for low-inertia grids. Triggered by a severe storm that damaged transmission lines, the grid—which had over 40% wind penetration at the time—experienced a rapid RoCoF that exceeded the capabilities of existing protection relays. The Australian Energy Market Operator (AEMO) @aemo2017blackout noted that the speed of the frequency collapse was so great that human dispatchers could not respond in time.
 
-This event directly validates the core premise of GridGuardian: in modern, high-renewable grids, the "decision window" for human operators has effectively closed. The South Australian event demonstrated that the transition from 3.0 Hz/s to 1.0 Hz frequency nadirs occurs in less than 1.5 seconds—a timescale that the GridGuardian prototype ultimately failed to achieve under the catastrophic August 2019 conditions, motivating the identification of pre-fault feature architectures as the primary direction for future research. By comparing the UK context with Australia and Texas, it is clear that the problem of 'transient fragility' is a universal property of the global energy transition, necessitating further development of AI-driven early-warning systems.
+This event validates the core premise of GridGuardian: in modern, high-renewable grids, the "decision window" for human operators has effectively closed. The South Australian event demonstrated that the transition from 3.0 Hz/s to 1.0 Hz frequency nadirs occurs in less than 1.5 seconds—a timescale that the GridGuardian prototype did not achieve under the August 2019 conditions, motivating the identification of pre-fault feature architectures as a direction for future research. By comparing the UK context with Australia and Texas, it is clear that the problem of 'transient fragility' is a property of the global energy transition, necessitating further development of AI-driven early-warning systems.
 
 == Power System Physics and the Inertia Challenge
 
@@ -36,9 +36,9 @@ Power system frequency dynamics are governed by the swing equation, which mathem
 
 === Empirical Evidence: The August 2019 Blackout
 
-The August 9, 2019 UK blackout provides a definitive empirical case study for low-inertia vulnerability. The simultaneous disconnection of the Little Barford gas plant and the Hornsea One wind farm removed 1,481 MW of generation, causing the grid frequency to decline to an unprecedented 48.8 Hz within 10 seconds @homan2020august.
+The August 9, 2019 UK blackout provides an empirical case study for low-inertia vulnerability. The simultaneous disconnection of the Little Barford gas plant and the Hornsea One wind farm removed 1,481 MW of generation, causing the grid frequency to decline to 48.8 Hz within 10 seconds @homan2020august.
 
-The subsequent technical investigation by the Office of Gas and Electricity Markets @ofgem2019report identified a critical misalignment between existing protection configurations and actual system inertia. Generators were calibrated for historical inertia margins that were mathematically invalid for a wind-dominated grid profile. This catastrophic event demonstrated the inadequacy of reactive, threshold-based protection mechanisms when system momentum is insufficient to arrest frequency decay prior to automated under-frequency load shedding.
+The subsequent technical investigation by the Office of Gas and Electricity Markets @ofgem2019report identified a misalignment between existing protection configurations and actual system inertia. Generators were calibrated for historical inertia margins that were mathematically invalid for a wind-dominated grid profile. This event demonstrated the inadequacy of reactive, threshold-based protection mechanisms when system momentum is insufficient to arrest frequency decay prior to automated load shedding.
 
 === Frequency Response Mechanisms
 
@@ -70,7 +70,7 @@ Conversely, "sub-second" transient stability forecasting addresses a fundamental
 
 Recurrent architectures, specifically Long Short-Term Memory (LSTM) networks, have historically dominated sequential forecasting in energy systems due to their capacity to capture complex temporal dependencies @goodfellow2016deep. However, LSTMs suffer from sequential bottlenecking, preventing true parallelization during training and inference.
 
-More recently, Transformer-based architectures have emerged as the state-of-the-art for multi-horizon energy forecasting. The Informer architecture @zhou2021informer utilizes ProbSparse self-attention to drastically reduce the $O(L^2)$ time complexity of standard transformers, making it highly effective for long-sequence day-ahead load forecasting. Similarly, the Temporal Fusion Transformer (TFT) @lim2021tft integrates specialized interpretable attention heads that align well with grid monitoring requirements. However, while Transformers excel at capturing long-term seasonal cycles over hours and days, the immense parameter count and complex attention mechanisms introduce unacceptable inference latency when attempting to process 1-second telemetry for instantaneous transient stability alerting.
+More recently, Transformer-based architectures have emerged for multi-horizon energy forecasting. The Informer architecture @zhou2021informer utilizes ProbSparse self-attention to reduce the $O(L^2)$ time complexity of standard transformers, making it effective for long-sequence load forecasting. Similarly, the Temporal Fusion Transformer (TFT) @lim2021tft integrates specialized interpretable attention heads that align well with grid monitoring requirements. However, while Transformers excel at capturing long-term seasonal cycles, the parameter count and complex attention mechanisms introduce high inference latency when attempting to process 1-second telemetry for instantaneous transient stability alerting.
 
 === Topology-Aware Graph Neural Networks (GNNs)
 
@@ -106,7 +106,7 @@ While statistically powerful, automated extraction is entirely detached from phy
 
 === Physics-Informed Neural Networks (PINNs)
 
-Standard machine learning models treat power grids as pure statistical distributions, ignoring fundamental mechanical realities. Physics-Informed Machine Learning (PIML) resolves this epistemological flaw by embedding domain principles into the learning architecture @karniadakis2021physics.
+Standard machine learning models treat power grids as pure statistical distributions, ignoring fundamental mechanical realities. Physics-Informed Machine Learning (PIML) addresses this limitation by embedding domain principles into the learning architecture @karniadakis2021physics.
 
 Physics-Informed Neural Networks explicitly penalise deviations from differential equations (such as the swing equation) during the loss calculation @raissi2019physics. By adding a physical residual term to the objective function, PINNs ensure that predictions obey the laws of conservation. While PINNs demonstrate excellent generalisation in transient stability assessments, enforcing continuous mathematical constraints during real-time, sub-second inference introduces substantial computational overhead. 
 
@@ -130,7 +130,7 @@ An alternative, highly efficient strategy involves physics-informed feature engi
 
 === The Transparency Requirement
 
-Black-box models face insurmountable adoption barriers in power system operations due to the inability to verify the logic preceding automated interventions. Algorithmic transparency is an explicit, non-negotiable requirement for integrating machine learning systems into live grid control rooms @machlev2022explainable.
+Black-box models face adoption barriers in power system operations due to the inability to verify the logic preceding automated interventions. Algorithmic transparency is a requirement for integrating machine learning systems into live grid control rooms @machlev2022explainable.
 
 === The Mathematical Axioms of SHAP
 
@@ -151,6 +151,6 @@ This critical review identifies three persistent gaps in contemporary grid stabi
 
 1. *Absence of Real-Time Probabilistic Bounds:* While deep learning architectures offer strong point-prediction accuracy for day-ahead markets, the sub-second generation of reliable, calibrated quantile bounds remains limited, restricting risk-aware decision making in the control room during transient instability.
 2. *Computational Feasibility of Physics Constraints:* PINNs successfully embed physical laws but struggle to meet the strict inference constraints of EFR battery deployment. The efficacy of physics-informed feature engineering coupled with high-speed tree ensembles remains inadequately benchmarked against formal neural architectures.
-3. *Adversarial and Discontinuous Event Validation:* The overwhelming majority of forecasting models and their XAI explanations are evaluated on normal, continuous grid operations. Systematic validation of model predictions and SHAP stability against catastrophic, discontinuous faults (such as the August 2019 blackout) is exceedingly rare.
+3. *Adversarial and Discontinuous Event Validation:* The majority of forecasting models and their XAI explanations are evaluated on normal, continuous grid operations. Systematic validation of model predictions and SHAP stability against severe, discontinuous faults (such as the August 2019 blackout) is rare.
 
 The present research addresses these specific methodological deficiencies by engineering GridGuardian: a hybrid, physics-informed LightGBM architecture designed to generate probabilistic frequency boundaries, explicitly validated against the non-linear dynamics of a major historical blackout.
