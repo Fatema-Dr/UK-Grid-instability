@@ -6,16 +6,28 @@ import lightgbm as lgb
 import tensorflow as tf
 import numpy as np
 import joblib
+import os
 from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score
 from sklearn.preprocessing import MinMaxScaler
 from datetime import datetime, timezone
 import matplotlib.pyplot as plt
-from tensorflow.keras.callbacks import EarlyStopping # Import EarlyStopping
+from tensorflow.keras.callbacks import EarlyStopping
+
+# Enable memory growth for TensorFlow to prevent OOM
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print(f"Enabled memory growth for {len(gpus)} GPUs")
+    except RuntimeError as e:
+        print(f"Failed to set memory growth: {e}")
 
 from src.config import (
     SPLIT_DATE, END_TEST_DATE, LGBM_FEATURE_COLS, TARGET_COL, TARGET_FREQ_NEXT,
     LSTM_FEATURE_COLS, LSTM_TIME_STEPS, LSTM_EPOCHS, LSTM_BATCH_SIZE,
-    LSTM_VALIDATION_SPLIT, LGBM_PARAMS, LGBM_QUANTILE_PARAMS, QUANTILE_ALPHAS
+    LSTM_VALIDATION_SPLIT, LGBM_PARAMS, LGBM_QUANTILE_PARAMS, QUANTILE_ALPHAS,
+    EXPORT_DIR
 )
 
 # --- Quantile Regression Metrics ---
@@ -167,6 +179,8 @@ def train_lstm_model(df_processed):
     Trains the LSTM model.
     """
     print("Preparing data for LSTM (Deep Learning)...")
+    tf.keras.backend.clear_session()  # Clear any previous graph to save memory
+
     data = df_processed.select(LSTM_FEATURE_COLS + [TARGET_COL, "timestamp"]).to_pandas()
 
     # Use SPLIT_DATE for temporal consistency with LightGBM models
@@ -231,13 +245,23 @@ def train_lstm_model(df_processed):
         restore_best_weights=True # Restore model weights from the epoch with the best value of the monitored quantity.
     )
 
+    # Define ModelCheckpoint callback to avoid data loss and memory spikes
+    os.makedirs(EXPORT_DIR, exist_ok=True)
+    checkpoint_path = f"{EXPORT_DIR}/lstm_checkpoint.weights.h5"
+    model_checkpoint = tf.keras.callbacks.ModelCheckpoint(
+        filepath=checkpoint_path,
+        save_weights_only=True,
+        save_best_only=True,
+        monitor='val_loss'
+    )
+
     print("Training LSTM...")
     history = model.fit(
         train_ds,
         epochs=LSTM_EPOCHS,
         validation_data=val_ds,
         verbose=1,
-        callbacks=[early_stopping] # Add early stopping callback
+        callbacks=[early_stopping, model_checkpoint] # Add callbacks
     )
 
     print("\nEvaluating LSTM on August 9...")
@@ -253,6 +277,8 @@ def train_lstm_quantile_comparator(df_processed, n_mc_samples=25):
     LSTM with MC Dropout for probabilistic forecasting - valid comparison to LightGBM quantile.
     """
     print("Preparing data for LSTM Quantile Comparator (MC Dropout)...")
+    tf.keras.backend.clear_session()  # Clear any previous graph to save memory
+
     data = df_processed.select(LSTM_FEATURE_COLS + [TARGET_FREQ_NEXT, "timestamp"]).to_pandas()
 
     split_dt = datetime.strptime(SPLIT_DATE, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
@@ -306,13 +332,22 @@ def train_lstm_quantile_comparator(df_processed, n_mc_samples=25):
 
     early_stopping = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
 
+    # Define ModelCheckpoint callback for MC Dropout LSTM
+    checkpoint_path = f"{EXPORT_DIR}/lstm_quantile_checkpoint.weights.h5"
+    model_checkpoint = tf.keras.callbacks.ModelCheckpoint(
+        filepath=checkpoint_path,
+        save_weights_only=True,
+        save_best_only=True,
+        monitor='val_loss'
+    )
+
     print("Training LSTM MC Dropout Quantile Comparator...")
     model.fit(
         train_ds,
         epochs=LSTM_EPOCHS,
         validation_data=val_ds,
         verbose=1,
-        callbacks=[early_stopping]
+        callbacks=[early_stopping, model_checkpoint]
     )
     
     # Build test dataset for MC Dropout evaluation

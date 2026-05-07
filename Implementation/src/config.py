@@ -105,7 +105,12 @@ LGBM_PARAMS = {
     'max_depth': 10,
     'random_state': 42,
     'n_jobs': -1,
-    'verbose': -1
+    'verbose': -1,
+    'device': 'gpu',
+    'gpu_platform_id': 0,
+    'gpu_device_id': 0,
+    'max_bin': 63,
+    'gpu_use_dp': False
 }
 
 LGBM_QUANTILE_PARAMS = {
@@ -120,7 +125,12 @@ LGBM_QUANTILE_PARAMS = {
     'reg_lambda': 1.0,          # L2 regularisation
     'random_state': 42,
     'n_jobs': -1,
-    'verbose': -1
+    'verbose': -1,
+    'device': 'gpu',
+    'gpu_platform_id': 0,
+    'gpu_device_id': 0,
+    'max_bin': 63,
+    'gpu_use_dp': False
 }
 
 # 4. WEATHER API CONFIGURATION

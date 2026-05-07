@@ -377,8 +377,9 @@ else: # Only proceed if df_data is not empty
     ])
 
     # Alert levels based on signal convergence
-    emergency_trigger = signal_count >= 3 or freq_now < alert_threshold_hz
-    warning_trigger   = signal_count >= 2 or (classifier_prob > 0.25) or (lstm_prob > 0.25)
+    # Include the model's prediction (lower_bound_pred) in the trigger!
+    emergency_trigger = (signal_count >= 3) or (freq_now < alert_threshold_hz) or (lower_bound_pred < alert_threshold_hz)
+    warning_trigger   = (signal_count >= 2) or (classifier_prob > 0.25) or (lstm_prob > 0.25)
 
     # --- Alert Persistence Logic ---
     if "last_alert_time" not in st.session_state:
@@ -396,9 +397,11 @@ else: # Only proceed if df_data is not empty
     # --- Sidebar UI components ---
     with st.sidebar.expander("🔍 Alert Debugging"):
         st.write(f"Threshold: {alert_threshold_hz} Hz")
-        st.write(f"Current Freq: {freq_now:.4f} Hz")
-        st.write(f"LGBM Lower: {lower_bound_pred:.4f} Hz")
+        st.write(f"Current Freq: {freq_now:.4f} Hz (Trigger: {freq_now < alert_threshold_hz})")
+        st.write(f"LGBM Lower: {lower_bound_pred:.4f} Hz (Trigger: {lower_bound_pred < alert_threshold_hz})")
+        st.write(f"Signal Count: {signal_count} (Trigger: {signal_count >= 3})")
         st.write(f"Emergency Trigger: {'✅' if emergency_trigger else '❌'}")
+        st.write(f"Persistent Alert Active: {'✅' if persistent_alert else '❌'}")
         st.write(f"Warning Trigger: {'✅' if warning_trigger else '❌'}")
         st.write(f"LSTM Prob: {lstm_prob:.4f}")
         st.write(f"Classifier P(unstable): {classifier_prob:.4f}")

@@ -226,6 +226,8 @@ def main():
     # 1. Load models
     lower_model = joblib.load("notebooks/lgbm_quantile_lower.pkl")
     upper_model = joblib.load("notebooks/lgbm_quantile_upper.pkl")
+    from src.config import LGBM_MODEL_PATH
+    classifier_model = joblib.load(LGBM_MODEL_PATH) if os.path.exists(LGBM_MODEL_PATH) else None
     
     quantiles_all_path = "notebooks/lgbm_quantiles_all.pkl"
     quantile_models = joblib.load(quantiles_all_path) if os.path.exists(quantiles_all_path) else None
@@ -322,8 +324,9 @@ def main():
     np.random.seed(42)
     spot_indices = sorted(np.random.choice(len(df_eval), size=5, replace=False))
 
-    # Also find the blackout event (Aug 9, ~15:52-16:00 UTC — lowest frequency)
-    # Note: Historical blackout was 16:52 BST = 15:52 UTC. 
+    # Also find the blackout event (Aug 9, ~15:52-16:00 UTC)
+    # We want to pick a timestamp JUST BEFORE the frequency drops below 49.8
+    # to prove the model's PREDICTIVE alert capability.
     blackout_mask = (
         (df_eval["timestamp"].dt.date == pd.Timestamp("2019-08-09").date()) &
         (df_eval["timestamp"].dt.hour >= 15) &
@@ -331,11 +334,14 @@ def main():
     )
     blackout_rows = df_eval[blackout_mask]
     if not blackout_rows.empty:
-        min_freq_idx = blackout_rows["grid_frequency"].idxmin()
+        # Find the exact moment frequency drops below 49.8
+        drop_idx = blackout_rows[blackout_rows["grid_frequency"] < 49.8].index[0]
+        # Go 10 seconds BEFORE that drop
+        predictive_idx = drop_idx - 10
         # Convert to positional index in df_eval
-        blackout_pos = df_eval.index.get_loc(min_freq_idx)
+        blackout_pos = df_eval.index.get_loc(predictive_idx)
         spot_indices.append(blackout_pos)
-        print("  Including Aug 9 blackout event (lowest frequency point).")
+        print("  Including Aug 9 blackout event (10s before threshold breach).")
 
     print(f"\n  Spot-checking {len(spot_indices)} timestamps:\n")
     print(f"  {'Timestamp':<26} {'Actual Hz':>10} {'Lower':>10} {'Upper':>10} {'In Band?':>10} {'Alert?':>8}")
@@ -349,10 +355,38 @@ def main():
         row = df_eval.iloc[pos_idx]
         ts = row["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
         actual = row[TARGET_FREQ_NEXT] if not np.isnan(row[TARGET_FREQ_NEXT]) else row["grid_frequency"]
+        freq_now = row["grid_frequency"]
         lb = lower_preds[pos_idx]
         ub = upper_preds[pos_idx]
         in_band = "✅" if lb <= actual <= ub else "❌"
-        alert = lb < alert_threshold
+        
+        # Match Dashboard Multi-Signal Logic
+        rocof_now   = row.get('rocof_smooth', row.get('rocof', 0.0))
+        rocof_accel = row.get('rocof_accel', 0.0)
+        volatility  = row.get('volatility_10s', 0.0)
+        ren_pen     = row.get('renewable_penetration_ratio', 0.0)
+        
+        # Classifier probability
+        input_lgbm_cls = pd.DataFrame([row[LGBM_FEATURE_COLS].values], columns=LGBM_FEATURE_COLS)
+        classifier_prob = classifier_model.predict_proba(input_lgbm_cls)[0][1] if classifier_model else 0.0
+
+        rocof_alert = (rocof_now < -0.015) and (freq_now < 50.05)
+        accel_alert = (rocof_accel < -0.005)
+        volatility_alert = (volatility > 0.02) and (freq_now < 50.1)
+        renewable_stress = (ren_pen > 0.15) and (rocof_now < -0.01)
+        freq_boundary = freq_now < 49.95
+
+        signal_count = sum([
+            rocof_alert,
+            accel_alert,
+            volatility_alert,
+            renewable_stress,
+            freq_boundary,
+            classifier_prob > 0.35,
+        ])
+
+        # Emergency Trigger from app.py
+        alert = (signal_count >= 3) or (freq_now < alert_threshold) or (lb < alert_threshold)
         alert_str = "⚠️ YES" if alert else "  no"
 
         print(f"  {ts:<26} {actual:>10.4f} {lb:>10.4f} {ub:>10.4f} {in_band:>10} {alert_str:>8}")
