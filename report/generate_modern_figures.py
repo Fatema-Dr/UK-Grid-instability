@@ -206,7 +206,7 @@ def generate_feature_importance_stability():
     ax.set_yticklabels(features)
     ax.invert_yaxis()
     ax.set_xlabel("Relative Importance (%)")
-    ax.set_title("Feature Importance Stability (5-Fold CV)")
+    ax.set_title("Figure: Temporal Feature Importance Stability", fontweight="bold", pad=20)
     
     # Remove x-axis spine for ultimate minimalism
     ax.spines['bottom'].set_visible(False)

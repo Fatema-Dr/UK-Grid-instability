@@ -26,7 +26,7 @@ import shap
 
 # ── Paths ───────────────────────────────────────────────────────────────────
 IMPL_DIR = os.path.dirname(os.path.abspath(__file__))
-FIG_DIR = os.path.join(IMPL_DIR, "..", "Final Report", "figures")
+FIG_DIR = os.path.join(IMPL_DIR, "..", "report", "figures")
 os.makedirs(FIG_DIR, exist_ok=True)
 
 LOWER_MODEL_PATH = os.path.join(IMPL_DIR, "notebooks", "lgbm_quantile_lower.pkl")
@@ -170,7 +170,7 @@ for bar, val in zip(bars, imp_pct[order]):
             f"{val:.1f}%", va="center", fontsize=9, fontweight="bold")
 
 ax.set_xlabel("Feature Importance (% Split Count — averaged lower/upper models)", fontweight="bold")
-ax.set_title("Figure 4.2: LightGBM Feature Importance\n(13-feature model, real trained weights)", fontweight="bold", pad=15)
+ax.set_title("Global Feature Importance: LightGBM Inference Engine", fontweight="bold", pad=15)
 
 legend_els = [
     mpatches.Patch(facecolor="#E53935", label="Physics features (RoCoF, OpSDA, Renewable)"),
@@ -219,7 +219,7 @@ for ax, res, color, title, mae_val in [
     ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)
 
-fig.suptitle("Figure 4.4: Prediction Residual Distributions (August 9, 2019)",
+fig.suptitle("Figure 2: Prediction Residual Distributions (August 9, 2019)",
              fontweight="bold", fontsize=13)
 save_fig(fig, "figure_4_4_residual_analysis.png")
 
@@ -273,7 +273,7 @@ ax2.set_title("(B) Safety Argument: Why Pessimistic Bias is Acceptable\n"
               "False negatives cost orders of magnitude more than false positives",
               fontweight="bold", fontsize=10)
 
-fig.suptitle("Figure 5.4: Quantile Calibration Reliability & Safety Justification",
+fig.suptitle("Figure 4: Quantile Calibration Reliability & Safety Justification",
              fontweight="bold", fontsize=13)
 save_fig(fig, "figure_5_4_calibration_reliability.png")
 
@@ -313,7 +313,7 @@ ax.set_yticks(y_pos)
 ax.set_yticklabels([feature_labels_list[i] for i in order], fontsize=9)
 ax.axvline(0, color="black", linewidth=0.8)
 ax.set_xlabel("SHAP Value (impact on predicted lower bound frequency, Hz)", fontweight="bold")
-ax.set_title("Figure 5.5: Global SHAP Feature Importance — Beeswarm\n"
+ax.set_title("Figure 8: Global SHAP Feature Importance — Beeswarm\n"
              f"Lower bound model (α=0.1) | n={len(X_sample):,} samples | Real TreeExplainer",
              fontweight="bold", pad=15)
 cbar = plt.colorbar(sc, ax=ax, fraction=0.03, pad=0.02)
@@ -374,7 +374,7 @@ for i, (sv, start) in enumerate(zip(top_sv, bar_starts)):
 ax.set_yticks(y_pos_w)
 ax.set_yticklabels(top_labels, fontsize=9)
 ax.set_xlabel("SHAP Value (Hz impact on predicted lower bound)", fontweight="bold")
-ax.set_title(f"Figure 5.2: SHAP Waterfall — Alert Trigger\n"
+ax.set_title(f"Figure 6: SHAP Waterfall — Alert Trigger\n"
              f"Timestamp: {alert_ts.strftime('%Y-%m-%d %H:%M:%S UTC')} | "
              f"Predicted lower bound: {pred_val:.4f} Hz",
              fontweight="bold", pad=15)

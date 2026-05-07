@@ -8,11 +8,11 @@ The August 9, 2019 UK blackout serves as the primary evaluation scenario. The an
 
 == Predictive Accuracy and Error Distribution
 
-Before evaluating the alerting logic, the fundamental accuracy of the underlying quantile regression models must be established. The system must capture the structural trajectory of the grid frequency without excessive deviation, while mathematically guaranteeing the statistical validity of its probability bounds.
+Before evaluating the alerting logic, the fundamental accuracy of the underlying quantile regression models must be quantified. The system is required to capture the structural trajectory of the grid frequency; however, statistical evaluation reveals that the "tightness" of the predicted bounds comes at the expense of nominal coverage reliability.
 
 === Residual Error and Quantile Metrics Analysis
 
-To comprehensively evaluate the LightGBM models (predicting the $alpha=0.1$ lower bound and $alpha=0.9$ upper bound), multiple rigorous statistical metrics were calculated. The primary optimization metric is the asymmetric Pinball Loss, but operational viability also requires evaluation of the Prediction Interval Coverage Probability (PICP) and the Mean Prediction Interval Width (MPIW).
+To evaluate the LightGBM models (predicting the $alpha=0.1$ lower bound), multiple rigorous statistical metrics were calculated. Table 4 presents the primary benchmark metrics for the August 2019 dataset.
 
 #figure(
   table(
@@ -21,23 +21,40 @@ To comprehensively evaluate the LightGBM models (predicting the $alpha=0.1$ lowe
     table.header(
       [*Metric*], [*Lower Bound ($alpha=0.1$)*], [*Upper Bound ($alpha=0.9$)*], [*Operational Target*], [*Status*]
     ),
-    [Pinball Loss], [0.00268], [0.00260], [< 0.02], [Pass],
-    [Mean Absolute Error (Hz)], [0.0135], [0.0142], [< 0.05], [Pass],
-    [Root Mean Square Error (Hz)], [0.0260], [0.0263], [< 0.10], [Pass],
-    [PICP (%)], [82.1], [—], [$>= 80%$], [Pass],
-    [MPIW (Hz)], [0.0387], [—], [< 0.20], [Pass],
+    [Pinball Loss†], [0.0032 ± 0.0001], [0.0160 ± 0.0004], [< 0.02], [Pass],
+    [Mean Absolute Error (Hz)], [0.0243 [0.0231, 0.0255]], [0.0193 [0.0183, 0.0203]], [< 0.05], [Pass],
+    [Root Mean Square Error (Hz)], [0.0419 [0.0398, 0.0440]], [0.0409 [0.0389, 0.0429]], [< 0.10], [Pass],
+    [PICP (%)], [73.5 [73.4, 73.6]], [—], [$>= 80%$], [Fail],
+    [MPIW (Hz)], [0.0357 [0.0340, 0.0375]], [—], [< 0.20], [Pass],
   ),
-  caption: [Comprehensive statistical evaluation metrics for the LightGBM quantile bounding models on the August 2019 dataset.]
+  caption: [Comprehensive statistical evaluation metrics for the LightGBM quantile bounding models on the August 2019 dataset. †Pre-recalibration Pinball Loss = 0.0032. The post-recalibration value of 0.0012 is reported in Table 7 (Summer column) as part of the seasonal evaluation, which also reflects isotonic-adjusted bounds. ‡Bootstrap confidence intervals (B=1,000 resamples) computed over the full August 2019 test set. PICP bounds computed using the Wilson score interval.]
 )
 
-The Pinball Loss values (0.00268 lower, 0.00260 upper) indicate exceptionally precise quantile estimation, falling well below the 0.02 threshold considered standard for structural frequency forecasting. The Mean Absolute Error (MAE) of $0.0135$ Hz is an order of magnitude smaller than the standard 0.2 Hz operational safety buffer.
-
-Critically, the Prediction Interval Coverage Probability (PICP) achieved 82.1%. This confirms that the model's physical boundary predictions are statistically sound: the true frequency remained within the predicted 10th-90th percentile bounds 82.1% of the time, slightly exceeding the nominal 80% theoretical target. Furthermore, the Mean Prediction Interval Width (MPIW) of 0.0387 Hz demonstrates that the model achieved this high coverage without generating uselessly wide intervals. Tight, highly accurate bounds are essential for minimizing false positive alerts in the control room.
+The Mean Absolute Error (MAE) of 0.0243 Hz indicates that the model follows the general grid frequency within a 25mHz margin. However, the Prediction Interval Coverage Probability (PICP) achieved only 73.5%. This indicates that the model's physical boundary predictions are statistically overconfident, failing the strict 80% coverage criterion. This result suggests that while the tree-based architecture is computationally efficient, it exhibits an "interval collapse" during periods of high volatility, where the predicted bounds fail to encapsulate the true frequency nadir with sufficient regularity for safety-critical deployment.
 
 #figure(
   image("../figures/figure_4_4_residual_analysis.png", width: 90%),
-  caption: [Residual distributions for the LightGBM models. The normal distribution centered tightly around zero confirms the absence of directional bias.]
-) 
+  caption: [Residual distributions for the LightGBM models. The Mean Absolute Error (MAE) of 0.0243 Hz represents the realistic performance ceiling of the current prototype.]
+)
+
+=== Classification Performance Metrics
+
+Because the continuous quantile bounds are heuristically converted into a binary `target_is_unstable` alert, classification metrics can be evaluated on the hold-out set containing the August 2019 blackout (Table 5).
+
+#figure(
+  table(
+    columns: (1.5fr, 1fr, 1fr),
+    align: left,
+    [*Metric*], [*Value*], [*95% Confidence Interval*],
+    [Recall (Sensitivity)], [99.2%], [[98.5%, 99.7%]],
+    [Precision], [94.1%], [[92.8%, 95.3%]],
+    [F1-Score], [96.6%], [[95.6%, 97.4%]],
+    [ROC-AUC], [0.998], [[0.996, 0.999]]
+  ),
+  caption: [Binary classification performance metrics for the heuristic alert system on the August 2019 test set ($N=3,600$ unstable events out of approximately 2.6 million total records, representing a local imbalance of ~722:1 during the high-volatility validation period).]
+)
+
+The system achieves a 99.2% recall rate on a test set containing 3,600 verified unstable events (defined by the physical heuristic bounds). This statistically significant sample size confirms the system's robust sensitivity to structural failure. The accompanying precision of 94.1% indicates a low false-positive rate, crucial for avoiding "alarm fatigue" in operational control rooms. In this safety-critical context, the more diagnostically meaningful metric is Recall, which directly quantifies the system's ability to minimize catastrophic missed alerts. However, as Section 4.5 demonstrates, high statistical recall on hold-out data does not necessarily translate into a predictive lead-time advantage during catastrophic transients.
 
 == Feature Importance: Validating the Physics Integration
 
@@ -50,28 +67,33 @@ The core hypothesis of this research is that machine learning models for power s
   caption: [Global feature importance for the LightGBM inference engine, highlighting the dominance of physics-based momentum indicators over raw environmental context.]
 )
 
-The feature importance analysis definitively proves the success of the physics-informed feature engineering. The 5-second smoothed Rate of Change of Frequency (RoCoF) and the Swinging Door Algorithm (OpSDA) Wind Ramp Rate overwhelmingly dominate the decision splits. The model actively prioritizes these engineered momentum and stability indicators, structurally deprecating raw environmental data (e.g., Solar Radiation, Hour of Day). This provides empirical proof that the architecture successfully bridges pure statistical learning with domain-specific mechanical realities.
+The global feature importance analysis reveals a critical insight into the model's decision-making hierarchy. As illustrated in Figure 3, short-term frequency derivatives (`rocof_1s` at 15.4%) and the absolute grid frequency (9.4%) overwhelmingly dominate the decision splits. In contrast, contextual features such as the OpSDA Wind Ramp Rate and Renewable Penetration exhibit near-zero split-count importance. This finding suggests that for sub-second transient instability prediction, the model prioritizes high-fidelity temporal momentum signals over slower-moving environmental or energy-mix data. This prioritization validates the system's design as a transient protection mechanism, where the primacy of immediate physical derivatives outweighs the predictive utility of macro-scale meteorological trends.
 
 == Probabilistic Forecasting Reliability
 
-Conventional point predictions are insufficient for safety-critical operations. Operators require statistically rigorous uncertainty bounds.
+The operational utility of GridGuardian depends on whether its stated risk probabilities align with empirical observation. 
 
-=== Isotonic Recalibration
+=== Isotonic Recalibration Performance
+
+The recalibrated PICP result of 73.5% still represents a failure of the 80% threshold even after recalibration.
 
 #figure(
   image("../figures/figure_5_4_calibration_reliability.png", width: 90%),
   caption: [Calibration reliability diagrams demonstrating the alignment of forecasted probability quantiles with empirical observation frequencies.]
 )
 
-The calibration analysis evaluates whether the stated risk probabilities align with empirical reality. Prior to recalibration, the raw outputs exhibited a pessimistic bias—overestimating the risk of severe deviations. The application of post-hoc Isotonic Regression successfully remapped these probabilities. The resulting calibration guarantees that when the model outputs a 10% risk threshold, the event empirically occurs with ~10% frequency, providing mathematically trustworthy bounds for control room operators.
+The calibration analysis (Figure 4) reveals that prior to post-hoc adjustment, the raw model exhibited a significant bias. The application of Isotonic Regression attempts to remap these probabilities; however, the persistent 73.5% PICP failure suggests that recalibration alone cannot compensate for the model’s structural inability to capture the most extreme tail-risk events. While the bounds are "trustworthy" for 73% of observations, they do not yet satisfy the legal requirements for automated EFR intervention without a wider safety margin.
 
-== Explainable AI (XAI) and The August Blackout Reconstruction
+== Forensic AI (XAI) and The August Blackout Reconstruction
 
-The definitive operational validation of the GridGuardian system is its response to the cascading failure of August 9, 2019. Rather than relying on a black-box probability output, the system's performance was reconstructed second-by-second to verify its predictive capabilities.
+The definitive evaluation of the system is its response to the August 9, 2019 blackout. Rather than a "predictive warning," the system's performance is better characterized as a *high-fidelity forensic reconstruction* of the collapse.
 
-=== The Fragility Fingerprint: Second-by-Second Narrative
+=== The Fragility Fingerprint: Reactive Identification
 
-The system employs a Multi-Physics Fusion scoring mechanism. It evaluates multiple independent physical and ML signals simultaneously. Table 4.2 presents a forensic reconstruction of the specific alert signals immediately before and during the catastrophic collapse.
+#figure(
+  image("../figures/impressive_uncertainty_ribbon.png", width: 95%),
+  caption: [Raw frequency time-series of the August 2019 blackout event overlaid with the LightGBM predicted quantile boundaries, illustrating the reactive alert identification and quantile bound behaviour during the collapse.]
+)
 
 #figure(
   table(
@@ -89,15 +111,13 @@ The system employs a Multi-Physics Fusion scoring mechanism. It evaluates multip
   caption: [Signal state analysis tracing the multi-physics 'Fragility Fingerprint' during the August 9, 2019 blackout.]
 )
 
-The reconstruction reveals a profound operational finding. During the stable period at 12:00:00, the system maintained a flawless zero false-positive rate. However, at exactly 15:52:36 UTC—seconds before the statutory boundaries were breached—a distinct "Fragility Fingerprint" emerged. The simultaneous activation of the RoCoF severity and low inertia vulnerability signals triggered a pre-emptive predictive alert. This indicates that the physics-informed features successfully detected the fundamental mechanical precursors of instability *before* the deep statistical quantile breach occurred.
+As documented in Table 6, the 'Fragility Fingerprint' was successfully activated during the fault window. However, the primary alert trigger occurred at *15:54:04 UTC*. Given that the frequency nadir (the point of maximum instability) occurred at *15:53:49 UTC*, this trigger represents a *reactive identification* of the failure rather than a predictive warning (Table 5). The system provided a 15-second "post-nadir" forensic confirmation. While this is operationally useful for automated incident reporting, it fails to meet the 1.0-second predictive lead-time required for EFR battery deployment during this specific catastrophic event.
 
 === SHAP Waterfall Decomposition
 
 #figure(
   image("../figures/figure_5_2_shap_waterfall.png", width: 85%),
-  caption: [SHAP Waterfall decomposition detailing the exact feature contributions that pushed the model's lower bound prediction past the critical 49.80 Hz threshold.]
+  caption: [SHAP Waterfall decomposition for the reactive alert at 15:54:04 UTC. The model identifies extreme RoCoF as the primary driver, confirming physical consistency but highlighting the lack of predictive "early-warning" indicators.]
 )
 
-The SHAP waterfall plot captures the exact sub-second inference where the system mandated an automated intervention, 1.2 seconds prior to the actual statutory breach. It is critical to contextualize this timeline: the system is configured with a 10-second forecasting horizon (`TTA_SECONDS = 10`). Therefore, at $T-1.2$ seconds, the model was mathematically predicting that a failure would occur 10 seconds later. The fact that the physical grid collapsed only 1.2 seconds later indicates the sheer violence of the transient fault, but the system still successfully triggered the alert *before* the crash occurred. 
-
-The decomposition provides complete algorithmic transparency into this specific inference: the base expected frequency was severely dragged downward by extreme, localized deviations in the smoothed RoCoF and the 10-second volatility metrics. This level of granular explainability satisfies the strict transparency requirements for deploying automated artificial intelligence into live National Energy System Operator (NESO) control rooms.
+The SHAP waterfall (Figure 6) confirms that at 15:54:04, the model's logic was dominated by immediate 1s RoCoF and frequency deviation. The lack of predictive success is likely attributable to the model's reliance on these high-speed derivatives, which only manifest *after* the initial physical disconnect has occurred. This suggests that for future iterations, the model requires features capable of detecting the pre-fault loss of synchronous momentum prior to the visible frequency drop. This level of granular explainability satisfies the transparency requirements for engineering audits, even when the system fails its primary predictive objective.
